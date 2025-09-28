@@ -5,6 +5,7 @@
 # Session data
 sessions/
 session-data.json
+active-notifications.json
 
 # Credentials and sensitive data
 .credentials.json

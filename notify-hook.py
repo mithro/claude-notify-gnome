@@ -73,6 +73,113 @@ def store_notification_mapping(notification_id, session_id):
     except Exception as e:
         logging.error(f"Failed to store notification mapping: {e}")
 
+def track_active_notification(session_id, notification_id):
+    """Track active notification for a session"""
+    try:
+        active_file = os.path.expanduser("~/.claude/active-notifications.json")
+
+        # Load existing active notifications
+        active = {}
+        if os.path.exists(active_file):
+            with open(active_file, 'r') as f:
+                active = json.load(f)
+
+        # Add new active notification for this session
+        active[session_id] = {
+            'notification_id': notification_id,
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # Save active notifications
+        os.makedirs(os.path.dirname(active_file), exist_ok=True)
+        with open(active_file, 'w') as f:
+            json.dump(active, f, indent=2)
+
+        logging.debug(f"Tracked active notification {notification_id} for session {session_id[:8]}...")
+
+    except Exception as e:
+        logging.error(f"Failed to track active notification: {e}")
+
+def dismiss_previous_notifications(session_id):
+    """Dismiss any previous notifications for this session when Claude starts working"""
+    try:
+        active_file = os.path.expanduser("~/.claude/active-notifications.json")
+
+        if not os.path.exists(active_file):
+            return
+
+        # Load active notifications
+        with open(active_file, 'r') as f:
+            active = json.load(f)
+
+        # Check if this session has active notifications
+        if session_id not in active:
+            return
+
+        notification_data = active[session_id]
+        notification_id = notification_data['notification_id']
+
+        logging.info(f"Dismissing previous notification {notification_id} for session {session_id[:8]}...")
+
+        # Dismiss the notification via D-Bus
+        bus = dbus.SessionBus()
+        notify_service = bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications"
+        )
+        notify_interface = dbus.Interface(
+            notify_service,
+            "org.freedesktop.Notifications"
+        )
+
+        # CloseNotification method
+        notify_interface.CloseNotification(notification_id)
+
+        # Remove from active notifications
+        del active[session_id]
+
+        # Save updated active notifications
+        with open(active_file, 'w') as f:
+            json.dump(active, f, indent=2)
+
+        logging.info(f"Successfully dismissed notification {notification_id}")
+
+    except dbus.exceptions.DBusException as e:
+        logging.debug(f"Could not dismiss notification via D-Bus: {e}")
+    except Exception as e:
+        logging.error(f"Failed to dismiss previous notifications: {e}")
+
+def detect_claude_activity(input_data):
+    """Detect if this hook call indicates Claude is starting work (not waiting)"""
+    message = input_data.get('message', '').lower()
+    hook_event = input_data.get('hook_event_name', '')
+
+    # Indicators that Claude is starting work
+    work_indicators = [
+        'needs your permission',  # About to use a tool
+        'permission to use',      # About to use a tool
+    ]
+
+    # Indicators that Claude is waiting/idle
+    wait_indicators = [
+        'waiting for your input',
+        'is waiting',
+        'idle'
+    ]
+
+    # If it's a waiting message, Claude is NOT working
+    for indicator in wait_indicators:
+        if indicator in message:
+            return False
+
+    # If it's a permission request, Claude is about to work
+    for indicator in work_indicators:
+        if indicator in message:
+            return True
+
+    # Default: assume it's activity unless explicitly a wait message
+    return True
+
 def send_notification_with_actions(title, message, session_id, urgency=2, timeout=0):
     """
     Send desktop notification with clickable actions
@@ -207,6 +314,11 @@ def main():
         logging.info(f"Message: {message}")
         logging.info(f"CWD: {cwd}")
 
+        # Check if Claude is starting work and dismiss previous notifications
+        is_claude_working = detect_claude_activity(input_data)
+        if is_claude_working and session_id != 'unknown':
+            dismiss_previous_notifications(session_id)
+
         # Register session with focus service
         if session_id != 'unknown' and cwd:
             register_session_with_service(session_id, cwd, transcript_path)
@@ -251,11 +363,16 @@ def main():
             body = f"{body}\n[{timestamp}]"
 
         # Send the notification with or without actions
+        notification_id = None
         if use_actions and session_id != 'unknown':
             notification_id = send_notification_with_actions(title, body, session_id, urgency=urgency)
             success = notification_id is not None
         else:
             success = send_notification(title, body, urgency=urgency)
+
+        # Track the notification as active if it's a waiting/idle notification
+        if success and notification_id and not is_claude_working and session_id != 'unknown':
+            track_active_notification(session_id, notification_id)
 
         if success:
             logging.info("Notification delivered successfully")

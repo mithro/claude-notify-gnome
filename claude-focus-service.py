@@ -426,6 +426,58 @@ class ClaudeFocusService(dbus.service.Object):
             return self.focus_session(session_id, session_data)
         return False
 
+    @dbus.service.method(
+        dbus_interface="com.claude.FocusService",
+        in_signature='s', out_signature='b'
+    )
+    def DismissNotifications(self, session_id):
+        """D-Bus method to dismiss all notifications for a session"""
+        try:
+            active_file = os.path.expanduser("~/.claude/active-notifications.json")
+
+            if not os.path.exists(active_file):
+                return True
+
+            # Load active notifications
+            with open(active_file, 'r') as f:
+                active = json.load(f)
+
+            # Check if this session has active notifications
+            if session_id not in active:
+                return True
+
+            notification_data = active[session_id]
+            notification_id = notification_data['notification_id']
+
+            logger.info(f"Dismissing notification {notification_id} for session {session_id[:8]}...")
+
+            # Dismiss the notification via D-Bus
+            notify_service = self.bus.get_object(
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications"
+            )
+            notify_interface = dbus.Interface(
+                notify_service,
+                "org.freedesktop.Notifications"
+            )
+
+            # CloseNotification method
+            notify_interface.CloseNotification(notification_id)
+
+            # Remove from active notifications
+            del active[session_id]
+
+            # Save updated active notifications
+            with open(active_file, 'w') as f:
+                json.dump(active, f, indent=2)
+
+            logger.info(f"Successfully dismissed notification {notification_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to dismiss notifications for session {session_id[:8]}...: {e}")
+            return False
+
 def main():
     """Main entry point"""
     logger.info("Starting Claude Focus Service...")
