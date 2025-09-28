@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""
+Claude Focus Service
+Background D-Bus service that handles notification clicks to focus Claude terminals
+
+This service:
+1. Listens for ActionInvoked signals from notifications
+2. Maps Claude session IDs to terminal windows
+3. Focuses the correct terminal when notifications are clicked
+"""
+
+import json
+import os
+import sys
+import time
+import logging
+import subprocess
+import dbus
+import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List
+
+# Configuration
+SERVICE_NAME = "com.claude.FocusService"
+OBJECT_PATH = "/com/claude/FocusService"
+SESSION_DATA_FILE = os.path.expanduser("~/.claude/session-data.json")
+LOG_FILE = "/tmp/claude-focus-service.log"
+
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class SessionManager:
+    """Manages Claude session to terminal window mapping"""
+
+    def __init__(self):
+        self.sessions: Dict[str, Dict] = {}
+        self.load_sessions()
+
+    def load_sessions(self):
+        """Load session data from disk"""
+        try:
+            if os.path.exists(SESSION_DATA_FILE):
+                with open(SESSION_DATA_FILE, 'r') as f:
+                    self.sessions = json.load(f)
+                logger.info(f"Loaded {len(self.sessions)} sessions from disk")
+            else:
+                logger.info("No existing session data found")
+        except Exception as e:
+            logger.error(f"Failed to load session data: {e}")
+            self.sessions = {}
+
+    def save_sessions(self):
+        """Save session data to disk"""
+        try:
+            os.makedirs(os.path.dirname(SESSION_DATA_FILE), exist_ok=True)
+            with open(SESSION_DATA_FILE, 'w') as f:
+                json.dump(self.sessions, f, indent=2)
+            logger.debug("Session data saved to disk")
+        except Exception as e:
+            logger.error(f"Failed to save session data: {e}")
+
+    def register_session(self, session_id: str, cwd: str, transcript_path: str):
+        """Register a Claude session with its context"""
+        self.sessions[session_id] = {
+            'cwd': cwd,
+            'transcript_path': transcript_path,
+            'registered_at': time.time(),
+            'last_activity': time.time()
+        }
+        self.save_sessions()
+        logger.info(f"Registered session {session_id[:8]}... in {cwd}")
+
+    def get_session(self, session_id: str) -> Optional[Dict]:
+        """Get session information"""
+        return self.sessions.get(session_id)
+
+    def cleanup_old_sessions(self, max_age_hours: int = 24):
+        """Remove sessions older than max_age_hours"""
+        cutoff = time.time() - (max_age_hours * 3600)
+        old_sessions = [
+            sid for sid, data in self.sessions.items()
+            if data.get('last_activity', 0) < cutoff
+        ]
+
+        for session_id in old_sessions:
+            del self.sessions[session_id]
+            logger.debug(f"Cleaned up old session {session_id[:8]}...")
+
+        if old_sessions:
+            self.save_sessions()
+            logger.info(f"Cleaned up {len(old_sessions)} old sessions")
+
+class TerminalFinder:
+    """Finds and focuses terminal windows"""
+
+    @staticmethod
+    def find_processes_by_cwd(target_cwd: str) -> List[int]:
+        """Find process PIDs that have the target current working directory"""
+        pids = []
+        try:
+            # Look for processes in the target directory
+            result = subprocess.run(
+                ['pgrep', '-f', 'claude'],
+                capture_output=True, text=True
+            )
+
+            if result.returncode == 0:
+                for pid_str in result.stdout.strip().split('\n'):
+                    if pid_str:
+                        try:
+                            pid = int(pid_str)
+                            # Check if this process has the right CWD
+                            cwd_link = f"/proc/{pid}/cwd"
+                            if os.path.exists(cwd_link):
+                                actual_cwd = os.readlink(cwd_link)
+                                if actual_cwd == target_cwd:
+                                    pids.append(pid)
+                        except (ValueError, OSError):
+                            continue
+
+        except Exception as e:
+            logger.error(f"Error finding processes by CWD: {e}")
+
+        return pids
+
+    @staticmethod
+    def find_terminal_window_by_pid(claude_pid: int) -> Optional[str]:
+        """Find the terminal window ID that contains the Claude process"""
+        try:
+            # Walk up the process tree to find the terminal
+            current_pid = claude_pid
+
+            for _ in range(10):  # Prevent infinite loops
+                try:
+                    # Get parent PID
+                    with open(f"/proc/{current_pid}/stat", 'r') as f:
+                        stat_data = f.read().split()
+                        parent_pid = int(stat_data[3])
+
+                    # Get process command
+                    with open(f"/proc/{parent_pid}/comm", 'r') as f:
+                        comm = f.read().strip()
+
+                    logger.debug(f"Process tree: {current_pid} -> {parent_pid} ({comm})")
+
+                    # Check if this is a terminal process
+                    if comm in ['gnome-terminal-', 'gnome-terminal', 'terminator', 'xterm', 'konsole']:
+                        # Found terminal, now find its window ID
+                        window_id = TerminalFinder.find_window_by_pid(parent_pid)
+                        if window_id:
+                            logger.info(f"Found terminal window {window_id} for PID {claude_pid}")
+                            return window_id
+
+                    current_pid = parent_pid
+                    if current_pid <= 1:
+                        break
+
+                except (FileNotFoundError, ValueError, IndexError):
+                    break
+
+        except Exception as e:
+            logger.error(f"Error walking process tree: {e}")
+
+        return None
+
+    @staticmethod
+    def find_window_by_pid(pid: int) -> Optional[str]:
+        """Find X11 window ID by process PID using wmctrl"""
+        try:
+            result = subprocess.run(
+                ['wmctrl', '-lp'],
+                capture_output=True, text=True
+            )
+
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        window_id = parts[0]
+                        window_pid = parts[2]
+                        if window_pid == str(pid):
+                            return window_id
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.debug(f"wmctrl not available or failed: {e}")
+
+        return None
+
+    @staticmethod
+    def focus_window(window_id: str) -> bool:
+        """Focus a window by its ID"""
+        try:
+            # Try wmctrl first
+            result = subprocess.run(
+                ['wmctrl', '-ia', window_id],
+                capture_output=True, text=True
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Successfully focused window {window_id} with wmctrl")
+                return True
+
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("wmctrl focus failed, trying xdotool")
+
+        try:
+            # Fallback to xdotool
+            result = subprocess.run(
+                ['xdotool', 'windowactivate', window_id],
+                capture_output=True, text=True
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Successfully focused window {window_id} with xdotool")
+                return True
+
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("xdotool focus failed")
+
+        logger.error(f"Failed to focus window {window_id}")
+        return False
+
+class ClaudeFocusService(dbus.service.Object):
+    """D-Bus service for handling Claude notification focus requests"""
+
+    def __init__(self):
+        self.session_manager = SessionManager()
+        self.terminal_finder = TerminalFinder()
+
+        # Set up D-Bus
+        DBusGMainLoop(set_as_default=True)
+        self.bus = dbus.SessionBus()
+
+        # Take the bus name
+        self.bus_name = dbus.service.BusName(SERVICE_NAME, self.bus)
+        super().__init__(self.bus_name, OBJECT_PATH)
+
+        # Connect to notification signals
+        self.setup_notification_listener()
+
+        logger.info("Claude Focus Service started")
+
+    def setup_notification_listener(self):
+        """Set up listener for notification ActionInvoked signals"""
+        try:
+            # Connect to ActionInvoked signal
+            self.bus.add_signal_receiver(
+                self.on_action_invoked,
+                signal_name='ActionInvoked',
+                dbus_interface='org.freedesktop.Notifications',
+                path='/org/freedesktop/Notifications'
+            )
+
+            # Connect to NotificationClosed signal for cleanup
+            self.bus.add_signal_receiver(
+                self.on_notification_closed,
+                signal_name='NotificationClosed',
+                dbus_interface='org.freedesktop.Notifications',
+                path='/org/freedesktop/Notifications'
+            )
+
+            logger.info("Connected to notification D-Bus signals")
+
+        except Exception as e:
+            logger.error(f"Failed to setup notification listener: {e}")
+
+    def on_action_invoked(self, notification_id, action_key):
+        """Handle notification action clicks"""
+        logger.info(f"Action invoked: notification_id={notification_id}, action_key={action_key}")
+
+        if action_key == "focus_terminal":
+            # Extract session ID from notification (we'll need to store this mapping)
+            self.handle_focus_request(notification_id)
+
+    def on_notification_closed(self, notification_id, reason):
+        """Handle notification being closed"""
+        logger.debug(f"Notification closed: id={notification_id}, reason={reason}")
+
+    def handle_focus_request(self, notification_id):
+        """Handle a request to focus a Claude terminal"""
+        # For now, we'll implement a simple approach:
+        # Try to focus the most recently active Claude session
+
+        if not self.session_manager.sessions:
+            logger.warning("No active Claude sessions found")
+            return
+
+        # Find the most recent session
+        latest_session = max(
+            self.session_manager.sessions.items(),
+            key=lambda item: item[1].get('last_activity', 0)
+        )
+
+        session_id, session_data = latest_session
+        self.focus_session(session_id, session_data)
+
+    def focus_session(self, session_id: str, session_data: Dict):
+        """Focus the terminal for a specific Claude session"""
+        cwd = session_data.get('cwd', '')
+
+        logger.info(f"Attempting to focus session {session_id[:8]}... in {cwd}")
+
+        # Find Claude processes in this directory
+        claude_pids = self.terminal_finder.find_processes_by_cwd(cwd)
+
+        if not claude_pids:
+            logger.warning(f"No Claude processes found in {cwd}")
+            return False
+
+        # Try to find and focus the terminal for each PID
+        for pid in claude_pids:
+            window_id = self.terminal_finder.find_terminal_window_by_pid(pid)
+            if window_id:
+                if self.terminal_finder.focus_window(window_id):
+                    # Update last activity
+                    session_data['last_activity'] = time.time()
+                    self.session_manager.save_sessions()
+                    return True
+
+        logger.warning(f"Could not focus terminal for session {session_id[:8]}...")
+        return False
+
+    @dbus.service.method(
+        dbus_interface="com.claude.FocusService",
+        in_signature='sss', out_signature='b'
+    )
+    def RegisterSession(self, session_id, cwd, transcript_path):
+        """D-Bus method to register a Claude session"""
+        self.session_manager.register_session(session_id, cwd, transcript_path)
+        return True
+
+    @dbus.service.method(
+        dbus_interface="com.claude.FocusService",
+        in_signature='s', out_signature='b'
+    )
+    def FocusSession(self, session_id):
+        """D-Bus method to focus a specific session"""
+        session_data = self.session_manager.get_session(session_id)
+        if session_data:
+            return self.focus_session(session_id, session_data)
+        return False
+
+def main():
+    """Main entry point"""
+    logger.info("Starting Claude Focus Service...")
+
+    try:
+        service = ClaudeFocusService()
+
+        # Set up periodic cleanup
+        def cleanup_timer():
+            service.session_manager.cleanup_old_sessions()
+            return True  # Keep timer running
+
+        GLib.timeout_add_seconds(3600, cleanup_timer)  # Cleanup every hour
+
+        # Start the main loop
+        main_loop = GLib.MainLoop()
+        logger.info("Service ready, entering main loop")
+        main_loop.run()
+
+    except KeyboardInterrupt:
+        logger.info("Service interrupted by user")
+    except Exception as e:
+        logger.error(f"Service error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
