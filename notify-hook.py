@@ -100,8 +100,8 @@ def track_active_notification(session_id, notification_id):
     except Exception as e:
         logging.error(f"Failed to track active notification: {e}")
 
-def dismiss_previous_notifications(session_id):
-    """Dismiss any previous notifications for this session when Claude starts working"""
+def clear_tracked_notification(session_id):
+    """Clear tracked notification for a session without dismissing (for basic notifications)"""
     try:
         active_file = os.path.expanduser("~/.claude/active-notifications.json")
 
@@ -112,14 +112,41 @@ def dismiss_previous_notifications(session_id):
         with open(active_file, 'r') as f:
             active = json.load(f)
 
+        # Remove this session if it exists
+        if session_id in active:
+            del active[session_id]
+
+            # Save updated active notifications
+            with open(active_file, 'w') as f:
+                json.dump(active, f, indent=2)
+
+            logging.debug(f"Cleared tracked notification for session {session_id[:8]}...")
+
+    except Exception as e:
+        logging.error(f"Failed to clear tracked notification: {e}")
+
+def dismiss_previous_notifications(session_id):
+    """Dismiss any previous notifications for this session to ensure single notification rule"""
+    try:
+        active_file = os.path.expanduser("~/.claude/active-notifications.json")
+
+        if not os.path.exists(active_file):
+            logging.debug(f"No active notifications file exists for session {session_id[:8]}...")
+            return
+
+        # Load active notifications
+        with open(active_file, 'r') as f:
+            active = json.load(f)
+
         # Check if this session has active notifications
         if session_id not in active:
+            logging.debug(f"No active notifications found for session {session_id[:8]}...")
             return
 
         notification_data = active[session_id]
         notification_id = notification_data['notification_id']
 
-        logging.info(f"Dismissing previous notification {notification_id} for session {session_id[:8]}...")
+        logging.info(f"Enforcing single notification rule: dismissing previous notification {notification_id} for session {session_id[:8]}...")
 
         # Dismiss the notification via D-Bus
         bus = dbus.SessionBus()
@@ -142,7 +169,7 @@ def dismiss_previous_notifications(session_id):
         with open(active_file, 'w') as f:
             json.dump(active, f, indent=2)
 
-        logging.info(f"Successfully dismissed notification {notification_id}")
+        logging.info(f"Successfully dismissed previous notification {notification_id} - ensuring single notification per session")
 
     except dbus.exceptions.DBusException as e:
         logging.debug(f"Could not dismiss notification via D-Bus: {e}")
@@ -314,10 +341,12 @@ def main():
         logging.info(f"Message: {message}")
         logging.info(f"CWD: {cwd}")
 
-        # Check if Claude is starting work and dismiss previous notifications
-        is_claude_working = detect_claude_activity(input_data)
-        if is_claude_working and session_id != 'unknown':
+        # Always dismiss any existing notification for this session to ensure only one notification per session
+        if session_id != 'unknown':
             dismiss_previous_notifications(session_id)
+
+        # Detect activity type for logging purposes
+        is_claude_working = detect_claude_activity(input_data)
 
         # Register session with focus service
         if session_id != 'unknown' and cwd:
@@ -370,9 +399,13 @@ def main():
         else:
             success = send_notification(title, body, urgency=urgency)
 
-        # Track the notification as active if it's a waiting/idle notification
-        if success and notification_id and not is_claude_working and session_id != 'unknown':
+        # Always track any successful notification for this session
+        if success and notification_id and session_id != 'unknown':
             track_active_notification(session_id, notification_id)
+        elif success and session_id != 'unknown':
+            # For basic notifications without ID, we can't track them for dismissal
+            # but we should still clear any previous tracked notifications
+            clear_tracked_notification(session_id)
 
         if success:
             logging.info("Notification delivered successfully")
