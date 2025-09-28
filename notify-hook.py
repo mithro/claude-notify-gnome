@@ -9,6 +9,7 @@ import json
 import sys
 import dbus
 import logging
+import os
 from datetime import datetime
 
 # Set up logging
@@ -18,9 +19,127 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+def register_session_with_service(session_id, cwd, transcript_path):
+    """Register session with the Claude Focus Service"""
+    try:
+        bus = dbus.SessionBus()
+        service = bus.get_object(
+            "com.claude.FocusService",
+            "/com/claude/FocusService"
+        )
+        focus_interface = dbus.Interface(
+            service,
+            "com.claude.FocusService"
+        )
+
+        success = focus_interface.RegisterSession(session_id, cwd, transcript_path)
+        if success:
+            logging.info(f"Successfully registered session {session_id[:8]}... with focus service")
+        else:
+            logging.warning(f"Failed to register session {session_id[:8]}... with focus service")
+
+    except dbus.exceptions.DBusException as e:
+        logging.debug(f"Focus service not available: {e}")
+    except Exception as e:
+        logging.error(f"Error registering session: {e}")
+
+def store_notification_mapping(notification_id, session_id):
+    """Store mapping between notification ID and session ID"""
+    try:
+        mapping_file = os.path.expanduser("~/.claude/notification-mapping.json")
+
+        # Load existing mappings
+        mappings = {}
+        if os.path.exists(mapping_file):
+            with open(mapping_file, 'r') as f:
+                mappings = json.load(f)
+
+        # Add new mapping
+        mappings[str(notification_id)] = session_id
+
+        # Clean up old mappings (keep only last 100)
+        if len(mappings) > 100:
+            # Keep only the most recent entries
+            sorted_items = sorted(mappings.items(), key=lambda x: int(x[0]))
+            mappings = dict(sorted_items[-100:])
+
+        # Save mappings
+        os.makedirs(os.path.dirname(mapping_file), exist_ok=True)
+        with open(mapping_file, 'w') as f:
+            json.dump(mappings, f, indent=2)
+
+        logging.debug(f"Stored notification mapping: {notification_id} -> {session_id[:8]}...")
+
+    except Exception as e:
+        logging.error(f"Failed to store notification mapping: {e}")
+
+def send_notification_with_actions(title, message, session_id, urgency=2, timeout=0):
+    """
+    Send desktop notification with clickable actions
+
+    Args:
+        title: Notification title
+        message: Notification body text
+        session_id: Claude session ID for focus callback
+        urgency: 0=low, 1=normal, 2=critical (persistent)
+        timeout: Duration in ms (0 = persistent for critical)
+
+    Returns:
+        notification_id if successful, None otherwise
+    """
+    try:
+        bus = dbus.SessionBus()
+        notify_service = bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications"
+        )
+        notify_interface = dbus.Interface(
+            notify_service,
+            "org.freedesktop.Notifications"
+        )
+
+        # Define actions - these appear as buttons on the notification
+        actions = [
+            "focus_terminal", "Focus Terminal",
+            "dismiss", "Dismiss"
+        ]
+
+        # Enhanced hints for better notification experience
+        hints = {
+            "urgency": dbus.Byte(urgency),
+            "category": dbus.String("im.received"),  # Message category
+            "desktop-entry": dbus.String("org.gnome.Terminal"),  # Associate with terminal
+        }
+
+        # Send notification with actions
+        # Parameters: app_name, replaces_id, icon, summary, body, actions, hints, timeout
+        notification_id = notify_interface.Notify(
+            "Claude Code",           # app name
+            0,                      # replaces id (0 = new notification)
+            "dialog-information",   # icon
+            title,                  # summary
+            message,                # body
+            actions,                # actions
+            hints,                  # hints
+            timeout                 # timeout in ms
+        )
+
+        # Store the mapping for later action handling
+        store_notification_mapping(notification_id, session_id)
+
+        logging.info(f"Notification with actions sent successfully (ID: {notification_id})")
+        return notification_id
+
+    except dbus.exceptions.DBusException as e:
+        logging.error(f"D-Bus error: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Failed to send notification: {e}")
+        return None
+
 def send_notification(title, message, urgency=2, timeout=0):
     """
-    Send desktop notification via D-Bus
+    Send basic desktop notification via D-Bus (fallback method)
 
     Args:
         title: Notification title
@@ -55,7 +174,7 @@ def send_notification(title, message, urgency=2, timeout=0):
             timeout                 # timeout in ms
         )
 
-        logging.info(f"Notification sent successfully (ID: {notification_id})")
+        logging.info(f"Basic notification sent successfully (ID: {notification_id})")
         return True
 
     except dbus.exceptions.DBusException as e:
@@ -81,9 +200,16 @@ def main():
         # Extract message and other fields
         message = input_data.get('message', 'Claude needs your attention')
         session_id = input_data.get('session_id', 'unknown')
+        cwd = input_data.get('cwd', '')
+        transcript_path = input_data.get('transcript_path', '')
 
         logging.info(f"Session: {session_id}")
         logging.info(f"Message: {message}")
+        logging.info(f"CWD: {cwd}")
+
+        # Register session with focus service
+        if session_id != 'unknown' and cwd:
+            register_session_with_service(session_id, cwd, transcript_path)
 
         # Determine notification details based on message content
         message_lower = message.lower()
@@ -93,35 +219,43 @@ def main():
             title = "⏳ Claude is Waiting"
             body = "Claude has finished processing and is waiting for your response"
             urgency = 2  # Critical - stays visible
-            icon = "dialog-question"
+            use_actions = True
 
         elif "permission" in message_lower:
             # Claude needs permission for a tool
             title = "🔒 Permission Required"
             body = message
             urgency = 2  # Critical - needs user action
-            icon = "dialog-warning"
+            use_actions = True
 
         elif "idle" in message_lower:
             # General idle notification
             title = "💭 Claude is Idle"
             body = "Claude is waiting for your input"
             urgency = 2
-            icon = "dialog-information"
+            use_actions = True
 
         else:
             # Generic notification
             title = "Claude Code Notification"
             body = message
             urgency = 1  # Normal priority
-            icon = "dialog-information"
+            use_actions = False
 
-        # Add timestamp to the body
+        # Add timestamp and directory info to the body
         timestamp = datetime.now().strftime("%H:%M:%S")
-        body = f"{body}\n[{timestamp}]"
+        if cwd:
+            dir_name = os.path.basename(cwd) or cwd
+            body = f"{body}\n📁 {dir_name} • {timestamp}"
+        else:
+            body = f"{body}\n[{timestamp}]"
 
-        # Send the notification
-        success = send_notification(title, body, urgency=urgency)
+        # Send the notification with or without actions
+        if use_actions and session_id != 'unknown':
+            notification_id = send_notification_with_actions(title, body, session_id, urgency=urgency)
+            success = notification_id is not None
+        else:
+            success = send_notification(title, body, urgency=urgency)
 
         if success:
             logging.info("Notification delivered successfully")

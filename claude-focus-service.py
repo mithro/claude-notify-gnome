@@ -230,6 +230,35 @@ class TerminalFinder:
         logger.error(f"Failed to focus window {window_id}")
         return False
 
+    @staticmethod
+    def focus_gnome_terminal_wayland() -> bool:
+        """Focus GNOME Terminal on Wayland using GNOME Shell D-Bus"""
+        try:
+            # Try to raise GNOME Terminal using GNOME Shell
+            result = subprocess.run([
+                'gdbus', 'call', '--session',
+                '--dest=org.gnome.Shell',
+                '--object-path=/org/gnome/Shell',
+                '--method=org.gnome.Shell.Eval',
+                'global.workspace_manager.get_active_workspace().list_windows().find(w => w.get_wm_class() === "Gnome-terminal").activate(global.get_current_time())'
+            ], capture_output=True, text=True)
+
+            if result.returncode == 0:
+                logger.info("Successfully focused GNOME Terminal using GNOME Shell D-Bus")
+                return True
+            else:
+                logger.debug(f"GNOME Shell D-Bus focus failed: {result.stderr}")
+
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("GNOME Shell D-Bus not available")
+
+        return False
+
+    @staticmethod
+    def detect_session_type() -> str:
+        """Detect if running on X11 or Wayland"""
+        return os.environ.get('XDG_SESSION_TYPE', 'unknown')
+
 class ClaudeFocusService(dbus.service.Object):
     """D-Bus service for handling Claude notification focus requests"""
 
@@ -279,12 +308,41 @@ class ClaudeFocusService(dbus.service.Object):
         logger.info(f"Action invoked: notification_id={notification_id}, action_key={action_key}")
 
         if action_key == "focus_terminal":
-            # Extract session ID from notification (we'll need to store this mapping)
-            self.handle_focus_request(notification_id)
+            # Get session ID from notification mapping
+            session_id = self.get_session_from_notification(notification_id)
+            if session_id:
+                self.handle_focus_request_for_session(session_id)
+            else:
+                # Fallback: focus most recent session
+                self.handle_focus_request(notification_id)
+        elif action_key == "dismiss":
+            logger.info(f"Notification {notification_id} dismissed by user")
 
     def on_notification_closed(self, notification_id, reason):
         """Handle notification being closed"""
         logger.debug(f"Notification closed: id={notification_id}, reason={reason}")
+
+    def get_session_from_notification(self, notification_id):
+        """Get session ID from notification ID mapping"""
+        try:
+            mapping_file = os.path.expanduser("~/.claude/notification-mapping.json")
+            if os.path.exists(mapping_file):
+                with open(mapping_file, 'r') as f:
+                    mappings = json.load(f)
+                    return mappings.get(str(notification_id))
+        except Exception as e:
+            logger.error(f"Failed to read notification mapping: {e}")
+        return None
+
+    def handle_focus_request_for_session(self, session_id):
+        """Handle focus request for a specific session"""
+        session_data = self.session_manager.get_session(session_id)
+        if session_data:
+            logger.info(f"Focusing specific session {session_id[:8]}...")
+            return self.focus_session(session_id, session_data)
+        else:
+            logger.warning(f"Session {session_id[:8]}... not found")
+            return False
 
     def handle_focus_request(self, notification_id):
         """Handle a request to focus a Claude terminal"""
@@ -310,6 +368,24 @@ class ClaudeFocusService(dbus.service.Object):
 
         logger.info(f"Attempting to focus session {session_id[:8]}... in {cwd}")
 
+        # Check session type first
+        session_type = self.terminal_finder.detect_session_type()
+        logger.debug(f"Session type: {session_type}")
+
+        if session_type == 'wayland':
+            # On Wayland, we can't reliably identify individual terminal windows,
+            # so just focus any GNOME Terminal window
+            if self.terminal_finder.focus_gnome_terminal_wayland():
+                # Update last activity
+                session_data['last_activity'] = time.time()
+                self.session_manager.save_sessions()
+                logger.info(f"Successfully focused terminal for session {session_id[:8]}... (Wayland)")
+                return True
+            else:
+                logger.warning(f"Could not focus terminal for session {session_id[:8]}... (Wayland)")
+                return False
+
+        # X11 method (original logic)
         # Find Claude processes in this directory
         claude_pids = self.terminal_finder.find_processes_by_cwd(cwd)
 
