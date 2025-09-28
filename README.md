@@ -1,8 +1,9 @@
 # Claude Code Click-to-Focus Notification System
 
-⚠️ **WARNING: VIBE-CODED SOFTWARE AHEAD!** ⚠️
-
-This project was entirely vibe-coded using Claude Code in a caffeine-fueled haze of enthusiasm and questionable life choices. It might destroy your computer, eat your grandma, or worse - make your notifications too useful. Use at your own risk! We are not responsible for any spontaneous terminal focus addiction, D-Bus dependency, or sudden urges to click all the things.
+> [!WARNING]
+> **VIBE-CODED SOFTWARE AHEAD!**
+>
+> This project was entirely vibe-coded using Claude Code in a caffeine-fueled haze of enthusiasm and questionable life choices. It might destroy your computer, eat your grandma, or worse - make your notifications too useful. Use at your own risk! We are not responsible for any spontaneous terminal focus addiction, D-Bus dependency, or sudden urges to click all the things.
 
 ---
 
