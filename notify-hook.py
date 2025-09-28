@@ -238,11 +238,9 @@ def send_notification_with_actions(title, message, session_id, urgency=2, timeou
             "dismiss", "Dismiss"
         ]
 
-        # Enhanced hints for better notification experience
+        # Simplified hints - remove potentially problematic ones
         hints = {
             "urgency": dbus.Byte(urgency),
-            "category": dbus.String("im.received"),  # Message category
-            "desktop-entry": dbus.String("org.gnome.Terminal"),  # Associate with terminal
         }
 
         # Send notification with actions
@@ -393,7 +391,7 @@ def main():
 
         # Send the notification with or without actions
         notification_id = None
-        if use_actions and session_id != 'unknown':
+        if use_actions and session_id != 'unknown':  # Re-enabled actions with simpler hints
             notification_id = send_notification_with_actions(title, body, session_id, urgency=urgency)
             success = notification_id is not None
         else:
