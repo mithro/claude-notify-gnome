@@ -13,6 +13,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/tim/.claude/notify-hook.py"
+          }
+        ]
+      }
     ]
   }
 }
