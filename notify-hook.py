@@ -334,10 +334,20 @@ def main():
         session_id = input_data.get('session_id', 'unknown')
         cwd = input_data.get('cwd', '')
         transcript_path = input_data.get('transcript_path', '')
+        hook_event_name = input_data.get('hook_event_name', '')
 
         logging.info(f"Session: {session_id}")
+        logging.info(f"Hook Event: {hook_event_name}")
         logging.info(f"Message: {message}")
         logging.info(f"CWD: {cwd}")
+
+        # Handle UserPromptSubmit: just dismiss notifications, don't create new ones
+        if hook_event_name == 'UserPromptSubmit':
+            logging.info("UserPromptSubmit detected - dismissing any idle notifications")
+            if session_id != 'unknown':
+                dismiss_previous_notifications(session_id)
+            logging.info("Auto-dismiss completed - Claude will start working")
+            sys.exit(0)
 
         # Always dismiss any existing notification for this session to ensure only one notification per session
         if session_id != 'unknown':
