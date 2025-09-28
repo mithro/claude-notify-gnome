@@ -1,0 +1,40 @@
+# Log files
+*.log
+/tmp/claude-notify.log
+
+# Session data
+sessions/
+session-data.json
+
+# Credentials and sensitive data
+.credentials.json
+*.key
+*.pem
+
+# Claude Code internal files
+projects/
+todos/
+shell-snapshots/
+statsig/
+history.jsonl
+plugins/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
