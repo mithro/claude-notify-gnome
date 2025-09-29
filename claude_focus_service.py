@@ -173,62 +173,8 @@ class TerminalFinder:
 
         return None
 
-    @staticmethod
-    def find_window_by_pid(pid: int) -> Optional[str]:
-        """Find X11 window ID by process PID using wmctrl"""
-        try:
-            result = subprocess.run(
-                ['wmctrl', '-lp'],
-                capture_output=True, text=True
-            )
-
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    parts = line.split()
-                    if len(parts) >= 3:
-                        window_id = parts[0]
-                        window_pid = parts[2]
-                        if window_pid == str(pid):
-                            return window_id
-
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logger.debug(f"wmctrl not available or failed: {e}")
-
-        return None
-
-    @staticmethod
-    def focus_window(window_id: str) -> bool:
-        """Focus a window by its ID"""
-        try:
-            # Try wmctrl first
-            result = subprocess.run(
-                ['wmctrl', '-ia', window_id],
-                capture_output=True, text=True
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Successfully focused window {window_id} with wmctrl")
-                return True
-
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.debug("wmctrl focus failed, trying xdotool")
-
-        try:
-            # Fallback to xdotool
-            result = subprocess.run(
-                ['xdotool', 'windowactivate', window_id],
-                capture_output=True, text=True
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Successfully focused window {window_id} with xdotool")
-                return True
-
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.debug("xdotool focus failed")
-
-        logger.error(f"Failed to focus window {window_id}")
-        return False
+    # X11-specific methods removed - these don't work on Wayland
+    # See TERMINAL_FOCUS_METHODS.md for detailed explanation of why wmctrl/xdotool don't work
 
     @staticmethod
     def focus_gnome_terminal_wayland(target_cwd: str = None) -> bool:

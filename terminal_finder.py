@@ -159,42 +159,11 @@ class TerminalDiscovery:
 
     @staticmethod
     def find_terminal_windows() -> List[Dict]:
-        """Find all terminal windows using wmctrl"""
-        windows = []
-
-        try:
-            result = subprocess.run(['wmctrl', '-lp'], capture_output=True, text=True)
-
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        window_id = parts[0]
-                        desktop = parts[1]
-                        window_pid = parts[2]
-                        window_title = ' '.join(parts[4:]) if len(parts) > 4 else ''
-
-                        try:
-                            # Get process info for this window
-                            pid = int(window_pid)
-                            with open(f"/proc/{pid}/comm", 'r') as f:
-                                comm = f.read().strip()
-
-                            windows.append({
-                                'window_id': window_id,
-                                'desktop': desktop,
-                                'pid': pid,
-                                'comm': comm,
-                                'title': window_title
-                            })
-
-                        except (ValueError, OSError):
-                            continue
-
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.warning("wmctrl not available")
-
-        return windows
+        """Find terminal windows - X11 wmctrl method removed (doesn't work on Wayland)"""
+        # X11-specific wmctrl method removed - see TERMINAL_FOCUS_METHODS.md
+        # On Wayland, use Window Calls extension instead
+        logger.warning("X11 wmctrl method removed - use Window Calls extension on Wayland")
+        return []
 
     @staticmethod
     def find_gnome_terminal_tabs() -> List[Dict]:
@@ -375,37 +344,9 @@ def test_focus_current_terminal():
             print("Failed to focus terminal using Wayland method")
         return
 
-    # X11 method (original logic)
-    print("Using X11 focus method...")
-
-    # Find window by PID
-    windows = TerminalDiscovery.find_terminal_windows()
-    target_window = None
-
-    for window in windows:
-        if window['pid'] == terminal_pid:
-            target_window = window
-            break
-
-    if not target_window:
-        print(f"Could not find window for terminal PID {terminal_pid}")
-        return
-
-    print(f"Found target window: {target_window['window_id']}")
-
-    # Test focusing with wmctrl
-    try:
-        result = subprocess.run([
-            'wmctrl', '-ia', target_window['window_id']
-        ], capture_output=True, text=True)
-
-        if result.returncode == 0:
-            print("Successfully focused window with wmctrl")
-        else:
-            print(f"Failed to focus with wmctrl: {result.stderr}")
-
-    except FileNotFoundError:
-        print("wmctrl not available")
+    # X11 method removed - doesn't work on Wayland
+    print("X11 focus method removed - wmctrl doesn't work on Wayland")
+    print("See TERMINAL_FOCUS_METHODS.md for detailed explanation")
 
 def main():
     """Main entry point"""

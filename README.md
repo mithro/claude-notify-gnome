@@ -60,10 +60,9 @@ systemctl --user start claude_focus.service
 
 ### Technical Details
 
-#### X11 Method
-- Uses process tree walking to find: Claude PID → bash → gnome-terminal
-- Maps process PID to window ID using `wmctrl -lp`
-- Focuses window with `wmctrl -ia` or `xdotool windowactivate`
+#### X11 Method (Removed)
+- X11-specific methods (wmctrl, xdotool) removed - these don't work on Wayland
+- See TERMINAL_FOCUS_METHODS.md for detailed explanation of why these fail
 
 #### Wayland Method
 - Uses GNOME Shell D-Bus interface for window management
@@ -138,14 +137,14 @@ The notification hook is already configured in `~/.claude/settings.json`:
 ### Required Packages
 - `python3-dbus` - D-Bus Python bindings
 - `python3-gi` - GObject introspection (for GLib mainloop)
-- `wmctrl` - X11 window management (optional, for X11 support)
-- `xdotool` - X11 automation (optional, for X11 support)
 
 ### Install Dependencies
 ```bash
 sudo apt update
-sudo apt install python3-dbus python3-gi wmctrl xdotool
+sudo apt install python3-dbus python3-gi
 ```
+
+**Note:** X11 tools (wmctrl, xdotool) are not needed and don't work on Wayland. See `TERMINAL_FOCUS_METHODS.md` for details.
 
 ### GNOME Shell Extension (Required for Wayland Focus)
 
