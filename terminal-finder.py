@@ -234,44 +234,62 @@ class TerminalDiscovery:
         return tabs
 
     @staticmethod
-    def focus_gnome_terminal_wayland() -> bool:
-        """Focus GNOME Terminal on Wayland using GNOME Shell D-Bus"""
+    def focus_gnome_terminal_wayland(target_cwd: str = None) -> bool:
+        """Focus GNOME Terminal using Claude session correlation"""
         try:
-            # Try to raise GNOME Terminal using GNOME Shell
-            result = subprocess.run([
-                'gdbus', 'call', '--session',
-                '--dest=org.gnome.Shell',
-                '--object-path=/org/gnome/Shell',
-                '--method=org.gnome.Shell.Eval',
-                'global.workspace_manager.get_active_workspace().list_windows().find(w => w.get_wm_class() === "Gnome-terminal").activate(global.get_current_time())'
-            ], capture_output=True, text=True)
+            # Use the Claude terminal focuser
+            import sys
+            import os
+            sys.path.insert(0, os.path.expanduser('~/.claude'))
+            from claude_terminal_focuser import focus_terminal_window
 
-            if result.returncode == 0:
-                logger.info("Successfully focused GNOME Terminal using GNOME Shell D-Bus")
+            logger.info(f"Focusing terminal using Claude session correlation (target_cwd: {target_cwd})")
+            success = focus_terminal_window(target_cwd)
+
+            if success:
+                logger.info("Successfully focused terminal using Claude session correlation")
                 return True
             else:
-                logger.debug(f"GNOME Shell D-Bus focus failed: {result.stderr}")
+                logger.warning("Failed to focus terminal using Claude session correlation")
 
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.debug("GNOME Shell D-Bus not available")
+        except Exception as e:
+            logger.warning(f"Claude session correlation failed: {e}")
 
-        # Alternative: try using the application launcher
+        # Fallback to basic Window Calls method
         try:
             result = subprocess.run([
                 'gdbus', 'call', '--session',
                 '--dest=org.gnome.Shell',
-                '--object-path=/org/gnome/Shell',
-                '--method=org.freedesktop.Application.Activate',
-                '{}'
-            ], capture_output=True, text=True)
+                '--object-path=/org/gnome/Shell/Extensions/Windows',
+                '--method=org.gnome.Shell.Extensions.Windows.List'
+            ], capture_output=True, text=True, timeout=5)
 
             if result.returncode == 0:
-                logger.info("Successfully activated GNOME Terminal")
-                return True
+                import json
+                windows_data = result.stdout.strip()
+                if windows_data.startswith("('[") and windows_data.endswith("',)"):
+                    json_str = windows_data[2:-3]
+                    windows = json.loads(json_str)
 
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.debug("Could not activate GNOME Terminal")
+                    terminal_windows = [w for w in windows if w.get('wm_class') == 'gnome-terminal-server']
 
+                    if terminal_windows:
+                        window_id = terminal_windows[0]['id']
+                        activate_result = subprocess.run([
+                            'gdbus', 'call', '--session',
+                            '--dest=org.gnome.Shell',
+                            '--object-path=/org/gnome/Shell/Extensions/Windows',
+                            '--method=org.gnome.Shell.Extensions.Windows.Activate',
+                            str(window_id)
+                        ], capture_output=True, text=True, timeout=5)
+
+                        if activate_result.returncode == 0:
+                            logger.info(f"Successfully focused terminal using fallback method (ID: {window_id})")
+                            return True
+        except Exception as e:
+            logger.debug(f"Fallback method failed: {e}")
+
+        logger.warning("All terminal focus methods failed")
         return False
 
     @staticmethod

@@ -147,6 +147,50 @@ sudo apt update
 sudo apt install python3-dbus python3-gi wmctrl xdotool
 ```
 
+### GNOME Shell Extension (Required for Wayland Focus)
+
+For the "Focus Terminal" button to work on GNOME/Wayland, you need to install the **Window Calls** extension:
+
+#### Installation Options:
+
+**Option 1: GNOME Extensions Website (Recommended)**
+1. Visit [Window Calls on GNOME Extensions](https://extensions.gnome.org/extension/4724/window-calls/)
+2. Click "Install" to add it to your browser
+3. Toggle the extension ON in the GNOME Extensions app
+
+**Option 2: Manual Installation**
+```bash
+# Clone the repository
+git clone https://github.com/ickyicky/window-calls.git
+cd window-calls
+
+# Install to user extensions directory
+cp -r . ~/.local/share/gnome-shell/extensions/window-calls@ickyicky.github.io/
+
+# Restart GNOME Shell (Alt+F2, type 'r', press Enter)
+# Or log out and back in
+
+# Enable the extension
+gnome-extensions enable window-calls@ickyicky.github.io
+```
+
+#### Verify Installation
+```bash
+# Test if the extension is working
+gdbus call --session --dest org.gnome.Shell \
+  --object-path /org/gnome/Shell/Extensions/Windows \
+  --method org.gnome.Shell.Extensions.Windows.List
+```
+
+#### Why This Extension is Needed
+GNOME 41+ restricts window focusing via D-Bus for security reasons. The Window Calls extension provides a safe D-Bus interface for window management operations including:
+- Listing windows with details
+- Activating/focusing windows
+- Moving windows between workspaces
+- Resizing and positioning windows
+
+Without this extension, the "Focus Terminal" button will not work on Wayland.
+
 ## Troubleshooting
 
 ### Service Won't Start

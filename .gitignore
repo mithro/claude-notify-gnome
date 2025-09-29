@@ -6,6 +6,7 @@
 sessions/
 session-data.json
 active-notifications.json
+notification-mapping.json
 
 # Credentials and sensitive data
 .credentials.json

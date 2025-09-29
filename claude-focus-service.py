@@ -231,27 +231,101 @@ class TerminalFinder:
         return False
 
     @staticmethod
-    def focus_gnome_terminal_wayland() -> bool:
-        """Focus GNOME Terminal on Wayland using GNOME Shell D-Bus"""
+    def focus_gnome_terminal_wayland(target_cwd: str = None) -> bool:
+        """Focus GNOME Terminal on Wayland using Window Calls extension or fallback methods"""
+
+        # Method 1: Try Window Calls GNOME Shell extension (most reliable)
         try:
-            # Try to raise GNOME Terminal using GNOME Shell
+            # Get list of windows from Window Calls extension
+            result = subprocess.run([
+                'gdbus', 'call', '--session',
+                '--dest=org.gnome.Shell',
+                '--object-path=/org/gnome/Shell/Extensions/Windows',
+                '--method=org.gnome.Shell.Extensions.Windows.List'
+            ], capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                import json
+                # Parse the output - it's a tuple with JSON string
+                windows_data = result.stdout.strip()
+                if windows_data.startswith("('[") and windows_data.endswith("',)"):
+                    # Extract JSON from D-Bus tuple format
+                    json_str = windows_data[2:-3]  # Remove ("[ and ]",)
+                    windows = json.loads(json_str)
+
+                    # Find terminal windows in current workspace
+                    terminal_windows = [
+                        w for w in windows
+                        if w.get('wm_class') == 'gnome-terminal-server'
+                        and w.get('in_current_workspace', False)
+                    ]
+
+                    if terminal_windows:
+                        # Try to find a terminal tab that matches the working directory
+                        # by looking at the window title
+                        target_window = None
+
+                        if target_cwd:
+                            # Look for a window title that contains the target directory
+                            for window in terminal_windows:
+                                title = window.get('title', '')
+                                if (target_cwd in title or
+                                    os.path.basename(target_cwd) in title or
+                                    title.endswith(os.path.basename(target_cwd))):
+                                    target_window = window
+                                    logger.debug(f"Found matching terminal tab by directory '{target_cwd}': {title}")
+                                    break
+
+                        # If no match by directory, use the first terminal window
+                        if not target_window:
+                            target_window = terminal_windows[0]
+                            if target_cwd:
+                                logger.debug(f"No directory match found for '{target_cwd}', using first terminal window")
+                            else:
+                                logger.debug("No target directory specified, using first terminal window")
+
+                        window_id = target_window['id']
+                        activate_result = subprocess.run([
+                            'gdbus', 'call', '--session',
+                            '--dest=org.gnome.Shell',
+                            '--object-path=/org/gnome/Shell/Extensions/Windows',
+                            '--method=org.gnome.Shell.Extensions.Windows.Activate',
+                            str(window_id)
+                        ], capture_output=True, text=True, timeout=5)
+
+                        if activate_result.returncode == 0:
+                            logger.info(f"Successfully focused GNOME Terminal using Window Calls extension (ID: {window_id})")
+                            return True
+                        else:
+                            logger.debug(f"Window Calls activation failed: {activate_result.stderr}")
+                    else:
+                        logger.debug("No terminal windows found in current workspace")
+                else:
+                    logger.debug(f"Unexpected Window Calls output format: {windows_data}")
+            else:
+                logger.debug(f"Window Calls extension not available or failed: {result.stderr}")
+        except Exception as e:
+            logger.debug(f"Window Calls extension method failed: {e}")
+
+        # Method 2: Try legacy GNOME Shell Eval (likely blocked but worth trying)
+        try:
             result = subprocess.run([
                 'gdbus', 'call', '--session',
                 '--dest=org.gnome.Shell',
                 '--object-path=/org/gnome/Shell',
                 '--method=org.gnome.Shell.Eval',
                 'global.workspace_manager.get_active_workspace().list_windows().find(w => w.get_wm_class() === "Gnome-terminal").activate(global.get_current_time())'
-            ], capture_output=True, text=True)
+            ], capture_output=True, text=True, timeout=5)
 
             if result.returncode == 0:
-                logger.info("Successfully focused GNOME Terminal using GNOME Shell D-Bus")
+                logger.info("Successfully focused GNOME Terminal using legacy GNOME Shell D-Bus")
                 return True
             else:
-                logger.debug(f"GNOME Shell D-Bus focus failed: {result.stderr}")
+                logger.debug(f"Legacy GNOME Shell D-Bus focus failed: {result.stderr}")
+        except Exception as e:
+            logger.debug(f"Legacy GNOME Shell method failed: {e}")
 
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.debug("GNOME Shell D-Bus not available")
-
+        logger.warning("All Wayland terminal focus methods failed - consider installing Window Calls GNOME extension")
         return False
 
     @staticmethod
@@ -375,7 +449,7 @@ class ClaudeFocusService(dbus.service.Object):
         if session_type == 'wayland':
             # On Wayland, we can't reliably identify individual terminal windows,
             # so just focus any GNOME Terminal window
-            if self.terminal_finder.focus_gnome_terminal_wayland():
+            if self.terminal_finder.focus_gnome_terminal_wayland(cwd):
                 # Update last activity
                 session_data['last_activity'] = time.time()
                 self.session_manager.save_sessions()
