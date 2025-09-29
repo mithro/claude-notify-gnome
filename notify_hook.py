@@ -34,11 +34,12 @@ def send_notification_with_actions(title: str, message: str, session_id: str) ->
             "org.freedesktop.Notifications"
         )
 
-        # Notification with action buttons
-        actions = [
-            "focus_terminal", "Focus Terminal",
-            "dismiss", "Dismiss"
-        ]
+        # Notification with action buttons (disabled for now)
+        actions = []
+        # actions = [
+        #     "focus_terminal", "Focus Terminal",
+        #     "dismiss", "Dismiss"
+        # ]
 
         # Critical urgency = persistent notification
         hints = {"urgency": dbus.Byte(2)}
@@ -62,7 +63,50 @@ def send_notification_with_actions(title: str, message: str, session_id: str) ->
         return None
 
 
-def register_session_with_service(session_id: str, cwd: str, pid: int, notification_id: int):
+def get_terminal_screen_uuid() -> Optional[str]:
+    """Get GNOME_TERMINAL_SCREEN UUID from the bash parent process"""
+    try:
+        # Walk up process tree: notify_hook -> claude -> bash
+        current_pid = os.getpid()
+
+        # Get Claude process (our parent)
+        claude_pid = os.getppid()
+
+        # Get bash process (Claude's parent)
+        with open(f'/proc/{claude_pid}/stat', 'r') as f:
+            stat_data = f.read().split()
+            bash_pid = int(stat_data[3])  # ppid field
+
+        # Read bash environment for GNOME_TERMINAL_SCREEN
+        env_file = f'/proc/{bash_pid}/environ'
+        with open(env_file, 'rb') as f:
+            env_data = f.read().decode('utf-8', errors='ignore')
+
+        # Parse environment variables
+        env_vars = {}
+        for line in env_data.split('\0'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                env_vars[key] = value
+
+        screen_uuid = env_vars.get('GNOME_TERMINAL_SCREEN')
+        service_id = env_vars.get('GNOME_TERMINAL_SERVICE')
+
+        if screen_uuid:
+            logger.info(f"Found terminal screen UUID: {screen_uuid}")
+            if service_id:
+                logger.info(f"Found terminal service ID: {service_id}")
+            return screen_uuid
+        else:
+            logger.warning("No GNOME_TERMINAL_SCREEN found in bash environment")
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to get terminal screen UUID: {e}")
+        return None
+
+
+def register_session_with_service(session_id: str, cwd: str, terminal_screen: Optional[str], notification_id: int):
     """Register session with the Focus Service"""
     try:
         bus = dbus.SessionBus()
@@ -81,10 +125,10 @@ def register_session_with_service(session_id: str, cwd: str, pid: int, notificat
             "com.claude.FocusService"
         )
 
-        # Register session
-        success = focus_interface.RegisterSession(session_id, cwd, pid)
+        # Register session with terminal screen UUID
+        success = focus_interface.RegisterSession(session_id, cwd, terminal_screen or "")
         if success:
-            logger.info(f"Registered session {session_id[:8]}... with focus service")
+            logger.info(f"Registered session {session_id[:8]}... with terminal screen {terminal_screen}")
 
             # Map notification to session
             focus_interface.MapNotification(str(notification_id), session_id)
@@ -114,14 +158,13 @@ def main():
         session_id = input_data.get('session_id', 'unknown')
         cwd = input_data.get('cwd', os.getcwd())
 
-        # Get current process PID
-        pid = os.getpid()
-        parent_pid = os.getppid()
+        # Get terminal screen UUID for precise terminal identification
+        terminal_screen = get_terminal_screen_uuid()
 
         logger.info(f"Event: {event_type}")
         logger.info(f"Session: {session_id}")
         logger.info(f"CWD: {cwd}")
-        logger.info(f"PID: {pid}, Parent: {parent_pid}")
+        logger.info(f"Terminal screen: {terminal_screen}")
 
         # Handle UserPromptSubmit - user started typing, no notification needed
         if event_type == 'UserPromptSubmit':
@@ -155,8 +198,8 @@ def main():
             notification_id = send_notification_with_actions(title, body, session_id)
 
             if notification_id:
-                # Register with focus service
-                register_session_with_service(session_id, cwd, parent_pid, notification_id)
+                # Register with focus service (disabled for now)
+                # register_session_with_service(session_id, cwd, terminal_screen, notification_id)
                 logger.info("Notification delivered successfully")
             else:
                 logger.error("Failed to deliver notification")
