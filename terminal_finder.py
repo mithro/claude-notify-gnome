@@ -224,7 +224,7 @@ class TerminalDiscovery:
         except Exception as e:
             logger.warning(f"Claude session correlation failed: {e}")
 
-        # Fallback to basic Window Calls method
+        # Try basic Window Calls method (any terminal window)
         try:
             result = subprocess.run([
                 'gdbus', 'call', '--session',
@@ -253,12 +253,12 @@ class TerminalDiscovery:
                         ], capture_output=True, text=True, timeout=5)
 
                         if activate_result.returncode == 0:
-                            logger.info(f"Successfully focused terminal using fallback method (ID: {window_id})")
+                            logger.info(f"Successfully focused terminal using basic Window Calls method (ID: {window_id})")
                             return True
         except Exception as e:
-            logger.debug(f"Fallback method failed: {e}")
+            logger.debug(f"Basic Window Calls method failed: {e}")
 
-        logger.warning("All terminal focus methods failed")
+        logger.warning("All Window Calls focus methods failed - ensure extension is installed and enabled")
         return False
 
     @staticmethod

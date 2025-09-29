@@ -178,9 +178,9 @@ class TerminalFinder:
 
     @staticmethod
     def focus_gnome_terminal_wayland(target_cwd: str = None) -> bool:
-        """Focus GNOME Terminal on Wayland using Window Calls extension or fallback methods"""
+        """Focus GNOME Terminal on Wayland using Window Calls extension (only working method)"""
 
-        # Method 1: Try Window Calls GNOME Shell extension (most reliable)
+        # Window Calls GNOME Shell extension (only working method on Wayland)
         try:
             # Get list of windows from Window Calls extension
             result = subprocess.run([
