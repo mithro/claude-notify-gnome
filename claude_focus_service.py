@@ -389,25 +389,9 @@ class ClaudeFocusService(dbus.service.Object):
                 logger.warning(f"Could not focus terminal for session {session_id[:8]}... (Wayland)")
                 return False
 
-        # X11 method (original logic)
-        # Find Claude processes in this directory
-        claude_pids = self.terminal_finder.find_processes_by_cwd(cwd)
-
-        if not claude_pids:
-            logger.warning(f"No Claude processes found in {cwd}")
-            return False
-
-        # Try to find and focus the terminal for each PID
-        for pid in claude_pids:
-            window_id = self.terminal_finder.find_terminal_window_by_pid(pid)
-            if window_id:
-                if self.terminal_finder.focus_window(window_id):
-                    # Update last activity
-                    session_data['last_activity'] = time.time()
-                    self.session_manager.save_sessions()
-                    return True
-
-        logger.warning(f"Could not focus terminal for session {session_id[:8]}...")
+        # X11 method removed - doesn't work on Wayland and calls non-existent methods
+        # On X11, would need to implement Window Calls extension support as well
+        logger.warning(f"X11 focus method removed - Window Calls extension required on all platforms")
         return False
 
     @dbus.service.method(
