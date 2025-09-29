@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/tim/.claude/claude-focus-service.py
+ExecStart=/home/tim/.claude/claude_focus_service.py
 Restart=on-failure
 RestartSec=5
 Environment=DISPLAY=:0

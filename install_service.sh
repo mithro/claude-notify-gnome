@@ -7,7 +7,7 @@
 set -e
 
 CLAUDE_DIR="$HOME/.claude"
-SERVICE_FILE="claude-focus.service"
+SERVICE_FILE="claude_focus.service"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 
 echo "Installing Claude Focus Service..."
@@ -20,21 +20,21 @@ cp "$CLAUDE_DIR/$SERVICE_FILE" "$SYSTEMD_USER_DIR/"
 
 # Reload systemd and enable the service
 systemctl --user daemon-reload
-systemctl --user enable claude-focus.service
+systemctl --user enable claude_focus.service
 
 echo "✅ Service installed successfully!"
 echo ""
 echo "To start the service now:"
-echo "  systemctl --user start claude-focus.service"
+echo "  systemctl --user start claude_focus.service"
 echo ""
 echo "To check service status:"
-echo "  systemctl --user status claude-focus.service"
+echo "  systemctl --user status claude_focus.service"
 echo ""
 echo "To view logs:"
-echo "  journalctl --user -u claude-focus.service -f"
+echo "  journalctl --user -u claude_focus.service -f"
 echo ""
 echo "To stop the service:"
-echo "  systemctl --user stop claude-focus.service"
+echo "  systemctl --user stop claude_focus.service"
 echo ""
 echo "To disable the service:"
-echo "  systemctl --user disable claude-focus.service"
+echo "  systemctl --user disable claude_focus.service"

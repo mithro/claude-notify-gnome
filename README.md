@@ -20,9 +20,9 @@ A sophisticated notification system that allows you to click desktop notificatio
 
 ## Architecture
 
-1. **notify-hook.py**: Enhanced notification hook with clickable actions
-2. **claude-focus-service.py**: Background D-Bus service handling clicks
-3. **terminal-finder.py**: Advanced terminal discovery utility
+1. **notify_hook.py**: Enhanced notification hook with clickable actions
+2. **claude_focus_service.py**: Background D-Bus service handling clicks
+3. **terminal_finder.py**: Advanced terminal discovery utility
 4. **Systemd Service**: Auto-starting background service
 
 ## Installation
@@ -30,32 +30,32 @@ A sophisticated notification system that allows you to click desktop notificatio
 The system is already set up and running! The components are:
 
 ### Files Created
-- `~/.claude/notify-hook.py` - Notification hook (already configured in Claude)
-- `~/.claude/claude-focus-service.py` - Background focus service
-- `~/.claude/terminal-finder.py` - Terminal discovery utility
-- `~/.claude/claude-focus.service` - Systemd service definition
-- `~/.claude/install-service.sh` - Service installer
+- `~/.claude/notify_hook.py` - Notification hook (already configured in Claude)
+- `~/.claude/claude_focus_service.py` - Background focus service
+- `~/.claude/terminal_finder.py` - Terminal discovery utility
+- `~/.claude/claude_focus.service` - Systemd service definition
+- `~/.claude/install_service.sh` - Service installer
 
 ### Systemd Service
 ```bash
 # Check service status
-systemctl --user status claude-focus.service
+systemctl --user status claude_focus.service
 
 # View logs
-journalctl --user -u claude-focus.service -f
+journalctl --user -u claude_focus.service -f
 
 # Stop/start service
-systemctl --user stop claude-focus.service
-systemctl --user start claude-focus.service
+systemctl --user stop claude_focus.service
+systemctl --user start claude_focus.service
 ```
 
 ## How It Works
 
 1. **Claude triggers notification**: When Claude waits for input or needs permission
-2. **Enhanced hook**: `notify-hook.py` sends notification with "Focus Terminal" button
+2. **Enhanced hook**: `notify_hook.py` sends notification with "Focus Terminal" button
 3. **Session registration**: Hook registers session info with background service
 4. **User clicks**: Click "Focus Terminal" button on notification
-5. **Service handles click**: `claude-focus-service.py` receives D-Bus ActionInvoked signal
+5. **Service handles click**: `claude_focus_service.py` receives D-Bus ActionInvoked signal
 6. **Terminal focus**: Service finds and focuses the correct terminal window
 
 ### Technical Details
@@ -75,19 +75,19 @@ systemctl --user start claude-focus.service
 ### Test Terminal Discovery
 ```bash
 # Analyze current terminal session
-~/.claude/terminal-finder.py analyze
+~/.claude/terminal_finder.py analyze
 
 # Test focusing current terminal
-~/.claude/terminal-finder.py focus
+~/.claude/terminal_finder.py focus
 
 # Find processes in specific directory
-~/.claude/terminal-finder.py directory /path/to/dir
+~/.claude/terminal_finder.py directory /path/to/dir
 ```
 
 ### Test Notification with Actions
 ```bash
 # Simulate a Claude notification with actions
-echo '{"session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | ~/.claude/notify-hook.py
+echo '{"session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | ~/.claude/notify_hook.py
 ```
 
 ## Logs and Debugging
@@ -99,13 +99,13 @@ tail -f /tmp/claude-notify.log
 
 ### Focus Service Logs
 ```bash
-journalctl --user -u claude-focus.service -f
+journalctl --user -u claude_focus.service -f
 ```
 
 ### Focus Service Manual Testing
 ```bash
 # Test focus service manually
-python3 ~/.claude/claude-focus-service.py
+python3 ~/.claude/claude_focus_service.py
 ```
 
 ## Configuration Files
@@ -124,7 +124,7 @@ The notification hook is already configured in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/tim/.claude/notify-hook.py"
+            "command": "/home/tim/.claude/notify_hook.py"
           }
         ]
       }
@@ -196,10 +196,10 @@ Without this extension, the "Focus Terminal" button will not work on Wayland.
 ### Service Won't Start
 ```bash
 # Check service status
-systemctl --user status claude-focus.service
+systemctl --user status claude_focus.service
 
 # Check logs for errors
-journalctl --user -u claude-focus.service -n 50
+journalctl --user -u claude_focus.service -n 50
 ```
 
 ### Notifications Not Clickable
@@ -207,7 +207,7 @@ journalctl --user -u claude-focus.service -n 50
 - Check D-Bus connectivity: `dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames`
 
 ### Terminal Focus Not Working
-- Test terminal discovery: `~/.claude/terminal-finder.py analyze`
+- Test terminal discovery: `~/.claude/terminal_finder.py analyze`
 - Check session type: `echo $XDG_SESSION_TYPE`
 - For Wayland: Ensure GNOME Shell D-Bus is available
 
