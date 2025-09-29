@@ -20,6 +20,7 @@ shell-snapshots/
 statsig/
 history.jsonl
 plugins/
+file-history/
 
 # Python cache
 __pycache__/
