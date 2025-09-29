@@ -42,7 +42,7 @@ class SessionInfo:
     """Information about a Claude session"""
     session_id: str
     cwd: str
-    pid: int
+    terminal_screen: str
     created_at: float
     last_seen: float
 
@@ -54,18 +54,18 @@ class SessionRegistry:
         self.sessions: Dict[str, SessionInfo] = {}
         self.notification_map: Dict[str, str] = {}  # notification_id -> session_id
 
-    def register_session(self, session_id: str, cwd: str, pid: int) -> bool:
+    def register_session(self, session_id: str, cwd: str, terminal_screen: str) -> bool:
         """Register a new Claude session"""
         try:
             now = time.time()
             self.sessions[session_id] = SessionInfo(
                 session_id=session_id,
                 cwd=cwd,
-                pid=pid,
+                terminal_screen=terminal_screen,
                 created_at=now,
                 last_seen=now
             )
-            logger.info(f"Registered session {session_id[:8]}... in {cwd}")
+            logger.info(f"Registered session {session_id[:8]}... in {cwd} (terminal: {terminal_screen})")
             return True
         except Exception as e:
             logger.error(f"Failed to register session: {e}")
@@ -220,25 +220,29 @@ class ClaudeFocusService(dbus.service.Object):
                 )
                 return False
 
-            # Try to find the specific terminal for this session
-            # For now, use the working directory in the title as a heuristic
-            target_window = None
-            cwd_basename = os.path.basename(session.cwd) or session.cwd
+            # Terminal focusing limitation: Window Calls operates at window level,
+            # but we need tab-level precision. GNOME Terminal doesn't provide
+            # D-Bus methods to focus specific terminal screens (tabs).
 
-            for window in terminal_windows:
-                title = window.get('title', '')
-                # Check if the window title contains the working directory
-                if session.cwd in title or cwd_basename in title:
-                    target_window = window
-                    logger.info(f"Found matching terminal: {title}")
-                    break
+            logger.warning("Terminal focusing has limitations:")
+            logger.warning(f"- We have terminal screen UUID: {session.terminal_screen}")
+            logger.warning(f"- Window Calls can only focus terminal windows, not specific tabs")
+            logger.warning(f"- GNOME Terminal D-Bus interface doesn't support screen focusing")
 
-            if not target_window:
-                # We cannot determine which terminal to focus
-                logger.error(f"Could not determine terminal for session in {session.cwd}")
+            if len(terminal_windows) == 1:
+                # Only one terminal window - safe to focus it
+                target_window = terminal_windows[0]
+                logger.info("Single terminal window found - focusing it")
+            else:
+                # Multiple terminal windows - cannot determine which contains our tab
+                logger.error(f"Multiple terminal windows found ({len(terminal_windows)})")
+                logger.error("Cannot reliably determine which window contains the Claude session")
                 self.send_error_notification(
                     "Focus Failed",
-                    f"Could not determine which terminal window contains the session in {session.cwd}"
+                    f"Multiple terminal windows detected.\n"
+                    f"Cannot reliably focus the correct terminal tab.\n\n"
+                    f"Limitation: GNOME Terminal screen UUID cannot be mapped to window focus.\n"
+                    f"Session screen: {session.terminal_screen}"
                 )
                 return False
 
@@ -291,11 +295,11 @@ class ClaudeFocusService(dbus.service.Object):
 
     @dbus.service.method(
         dbus_interface=SERVICE_NAME,
-        in_signature='ssi', out_signature='b'
+        in_signature='sss', out_signature='b'
     )
-    def RegisterSession(self, session_id: str, cwd: str, pid: int) -> bool:
+    def RegisterSession(self, session_id: str, cwd: str, terminal_screen: str) -> bool:
         """D-Bus method to register a Claude session"""
-        return self.registry.register_session(session_id, cwd, pid)
+        return self.registry.register_session(session_id, cwd, terminal_screen)
 
     @dbus.service.method(
         dbus_interface=SERVICE_NAME,
