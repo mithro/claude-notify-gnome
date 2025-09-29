@@ -307,25 +307,9 @@ class TerminalFinder:
         except Exception as e:
             logger.debug(f"Window Calls extension method failed: {e}")
 
-        # Method 2: Try legacy GNOME Shell Eval (likely blocked but worth trying)
-        try:
-            result = subprocess.run([
-                'gdbus', 'call', '--session',
-                '--dest=org.gnome.Shell',
-                '--object-path=/org/gnome/Shell',
-                '--method=org.gnome.Shell.Eval',
-                'global.workspace_manager.get_active_workspace().list_windows().find(w => w.get_wm_class() === "Gnome-terminal").activate(global.get_current_time())'
-            ], capture_output=True, text=True, timeout=5)
-
-            if result.returncode == 0:
-                logger.info("Successfully focused GNOME Terminal using legacy GNOME Shell D-Bus")
-                return True
-            else:
-                logger.debug(f"Legacy GNOME Shell D-Bus focus failed: {result.stderr}")
-        except Exception as e:
-            logger.debug(f"Legacy GNOME Shell method failed: {e}")
-
-        logger.warning("All Wayland terminal focus methods failed - consider installing Window Calls GNOME extension")
+        # No fallback methods - Window Calls extension is required for Wayland focus
+        logger.error("Window Calls extension focus failed - this is the only working method on Wayland")
+        logger.error("Please ensure the Window Calls GNOME extension is properly installed and enabled")
         return False
 
     @staticmethod

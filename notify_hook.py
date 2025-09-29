@@ -12,12 +12,19 @@ import logging
 import os
 from datetime import datetime
 
-# Set up logging
+# Set up logging FIRST
 logging.basicConfig(
     filename='/tmp/claude-notify.log',
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+# LOG IMMEDIATELY when script is invoked
+logging.info("🚀 HOOK SCRIPT INVOKED - notify_hook.py started")
+logging.info(f"Command line args: {sys.argv}")
+logging.info(f"Working directory: {os.getcwd()}")
+logging.info(f"Process ID: {os.getpid()}")
+logging.info(f"Parent Process ID: {os.getppid()}")
 
 def register_session_with_service(session_id, cwd, transcript_path):
     """Register session with the Claude Focus Service"""
@@ -347,6 +354,7 @@ def main():
             if session_id != 'unknown':
                 dismiss_previous_notifications(session_id)
             logging.info("Auto-dismiss completed - Claude will start working")
+            logging.info("✅ HOOK SCRIPT COMPLETED (UserPromptSubmit)")
             sys.exit(0)
 
         # Always dismiss any existing notification for this session to ensure only one notification per session
@@ -417,9 +425,11 @@ def main():
 
         if success:
             logging.info("Notification delivered successfully")
+            logging.info("✅ HOOK SCRIPT COMPLETED SUCCESSFULLY")
             sys.exit(0)
         else:
             logging.error("Failed to deliver notification")
+            logging.info("❌ HOOK SCRIPT COMPLETED WITH NOTIFICATION FAILURE")
             # Don't exit with error - we don't want to break Claude's flow
             sys.exit(0)
 
