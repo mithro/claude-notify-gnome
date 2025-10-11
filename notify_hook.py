@@ -2,6 +2,7 @@
 """
 Claude Code Notification Hook - Simplified Version
 Sends desktop notifications when Claude needs user attention
+Automatically dismisses notifications when user responds or Claude starts working
 """
 
 import json
@@ -11,6 +12,11 @@ import dbus
 import logging
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
+
+# File paths for tracking notifications
+CLAUDE_DIR = Path.home() / '.claude'
+ACTIVE_NOTIFICATIONS_FILE = CLAUDE_DIR / 'active-notifications.json'
 
 # Logging setup (debug mode)
 logging.basicConfig(
@@ -19,6 +25,90 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def save_notification_id(session_id: str, notification_id: int):
+    """Save notification ID for a session to track active notifications"""
+    try:
+        # Load existing data
+        data = {}
+        if ACTIVE_NOTIFICATIONS_FILE.exists():
+            with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+                data = json.load(f)
+
+        # Update with new notification
+        data[session_id] = {
+            "notification_id": notification_id,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Save back to file
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        logger.info(f"Saved notification ID {notification_id} for session {session_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Failed to save notification ID: {e}")
+
+
+def get_notification_id(session_id: str) -> Optional[int]:
+    """Get the active notification ID for a session"""
+    try:
+        if not ACTIVE_NOTIFICATIONS_FILE.exists():
+            return None
+
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+            data = json.load(f)
+
+        session_data = data.get(session_id)
+        if session_data:
+            return session_data.get("notification_id")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get notification ID: {e}")
+        return None
+
+
+def remove_notification_id(session_id: str):
+    """Remove notification ID from tracking after dismissal"""
+    try:
+        if not ACTIVE_NOTIFICATIONS_FILE.exists():
+            return
+
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+            data = json.load(f)
+
+        if session_id in data:
+            del data[session_id]
+
+            with open(ACTIVE_NOTIFICATIONS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            logger.info(f"Removed notification tracking for session {session_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Failed to remove notification ID: {e}")
+
+
+def close_notification(notification_id: int) -> bool:
+    """Close a notification using D-Bus"""
+    try:
+        bus = dbus.SessionBus()
+        notify_service = bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications"
+        )
+        notify_interface = dbus.Interface(
+            notify_service,
+            "org.freedesktop.Notifications"
+        )
+
+        # Call CloseNotification method
+        notify_interface.CloseNotification(dbus.UInt32(notification_id))
+        logger.info(f"Successfully closed notification {notification_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to close notification {notification_id}: {e}")
+        return False
 
 
 def send_notification_with_actions(title: str, message: str, session_id: str) -> Optional[int]:
@@ -166,9 +256,60 @@ def main():
         logger.info(f"CWD: {cwd}")
         logger.info(f"Terminal screen: {terminal_screen}")
 
-        # Handle UserPromptSubmit - user started typing, no notification needed
+        # Handle UserPromptSubmit - user started typing, dismiss any active notification
         if event_type == 'UserPromptSubmit':
-            logger.info("UserPromptSubmit - user is active, skipping notification")
+            logger.info("UserPromptSubmit - user is responding, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
+
+        # Handle PreToolUse - Claude started working, dismiss any active notification
+        if event_type == 'PreToolUse':
+            logger.info("PreToolUse - Claude is working, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
+
+        # Handle PostToolUse - Claude finished a tool, dismiss any active notification
+        if event_type == 'PostToolUse':
+            logger.info("PostToolUse - Claude finished tool execution, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
+
+        # Handle Stop - Claude finished responding, dismiss any active notification
+        if event_type == 'Stop':
+            logger.info("Stop - Claude finished responding, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
             return 0
 
         # Determine notification details based on message
@@ -195,9 +336,18 @@ def main():
 
         # Send notification with actions
         if session_id != 'unknown':
+            # Close any existing notification for this session before sending a new one
+            old_notification_id = get_notification_id(session_id)
+            if old_notification_id:
+                logger.info(f"Closing previous notification {old_notification_id} before sending new one")
+                close_notification(old_notification_id)
+
             notification_id = send_notification_with_actions(title, body, session_id)
 
             if notification_id:
+                # Save notification ID for later dismissal
+                save_notification_id(session_id, notification_id)
+
                 # Register with focus service (disabled for now)
                 # register_session_with_service(session_id, cwd, terminal_screen, notification_id)
                 logger.info("Notification delivered successfully")
