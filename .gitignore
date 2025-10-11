@@ -21,6 +21,7 @@ statsig/
 history.jsonl
 plugins/
 file-history/
+debug/
 
 # Python cache
 __pycache__/
