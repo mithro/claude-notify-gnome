@@ -7,23 +7,24 @@
 
 ---
 
-A sophisticated notification system that allows you to click desktop notifications to instantly focus the terminal window containing your Claude Code session.
+A sophisticated notification system that allows you to click desktop notifications to instantly focus the specific terminal tab containing your Claude Code session.
 
 ## Features
 
-- 🖱️ **Clickable Notifications**: Click "Focus Terminal" to instantly switch to your Claude session
+- 🖱️ **Clickable Notifications**: Click "Focus Terminal" to instantly switch to the correct terminal tab
 - 🖥️ **Cross-Platform**: Works on both X11 and Wayland (Ubuntu 24.04 tested)
-- 🎯 **Session-Aware**: Tracks multiple Claude sessions and focuses the correct terminal
+- 🎯 **Tab-Aware**: Focuses the exact terminal tab running Claude, not just the window
 - 🔧 **Auto-Start**: Systemd service automatically starts the background focus handler
 - 📁 **Context-Rich**: Notifications show current directory and timestamp
-- ⚡ **Fast & Reliable**: Pure Python D-Bus implementation with multiple fallback methods
+- ⚡ **Fast & Reliable**: Uses GNOME Terminal's SearchProvider D-Bus API for direct tab control
 
 ## Architecture
 
 1. **notify_hook.py**: Enhanced notification hook with clickable actions
 2. **claude_focus_service.py**: Background D-Bus service handling clicks
-3. **terminal_finder.py**: Advanced terminal discovery utility
-4. **Systemd Service**: Auto-starting background service
+3. **gnome_terminal_tabs.py**: Library for GNOME Terminal tab control via D-Bus
+4. **terminal_finder.py**: Advanced terminal discovery utility
+5. **Systemd Service**: Auto-starting background service
 
 ## Installation
 
@@ -32,6 +33,7 @@ The system is already set up and running! The components are:
 ### Files Created
 - `./notify_hook.py` - Notification hook (already configured in Claude)
 - `./claude_focus_service.py` - Background focus service
+- `./gnome_terminal_tabs.py` - Terminal tab control library
 - `./terminal_finder.py` - Terminal discovery utility
 - `./claude_focus.service` - Systemd service definition
 - `./install_service.sh` - Service installer
@@ -53,23 +55,48 @@ systemctl --user start claude_focus.service
 
 1. **Claude triggers notification**: When Claude waits for input or needs permission
 2. **Enhanced hook**: `notify_hook.py` sends notification with "Focus Terminal" button
-3. **Session registration**: Hook registers session info with background service
+3. **Session registration**: Hook registers session info (including terminal UUID) with background service
 4. **User clicks**: Click "Focus Terminal" button on notification
 5. **Service handles click**: `claude_focus_service.py` receives D-Bus ActionInvoked signal
-6. **Terminal focus**: Service finds and focuses the correct terminal window
+6. **Terminal tab focus**: Service uses `gnome_terminal_tabs.py` library to focus the exact tab
 
 ### Technical Details
 
-#### X11 Method (Removed)
-- X11-specific methods (wmctrl, xdotool) removed - these don't work on Wayland
-- See TERMINAL_FOCUS_METHODS.md for detailed explanation of why these fail
+#### SearchProvider D-Bus API Method
+- Uses GNOME Terminal's `org.gnome.Shell.SearchProvider2` D-Bus interface
+- `GetInitialResultSet([])` - Lists all terminal tabs with UUIDs
+- `GetResultMetas(uuids)` - Retrieves tab metadata (titles, descriptions)
+- `ActivateResult(uuid, [], 0)` - Directly focuses a specific tab by UUID
+- Works on both X11 and Wayland without requiring extensions
+- No X11 tools (wmctrl, xdotool) needed
 
-#### Wayland Method
-- Uses GNOME Shell D-Bus interface for window management
-- Executes JavaScript in GNOME Shell to find and activate terminal windows
-- Fallback method works across all GNOME applications
+#### UUID Tracking
+- Extracts `GNOME_TERMINAL_SCREEN` environment variable from Claude's parent bash process
+- Converts D-Bus object path format to UUID format (underscores → hyphens)
+- Enables precise tab identification even with multiple Claude sessions
 
 ## Testing
+
+### Test Terminal Tab Control
+```bash
+# List all terminal tabs
+python3 test_dbus_tab_switch.py
+
+# Focus current tab
+python3 test_dbus_tab_switch.py --focus-current
+
+# Focus tab by index
+python3 test_dbus_tab_switch.py --focus-index 2
+
+# Focus tab by directory
+python3 test_dbus_tab_switch.py --focus-directory /path/to/dir
+
+# Interactive example with all features
+python3 examples/terminal_tabs_example.py
+
+# Interactive tab selection
+python3 examples/terminal_tabs_example.py --interactive
+```
 
 ### Test Terminal Discovery
 ```bash
@@ -144,51 +171,7 @@ sudo apt update
 sudo apt install python3-dbus python3-gi
 ```
 
-**Note:** X11 tools (wmctrl, xdotool) are not needed and don't work on Wayland. See `TERMINAL_FOCUS_METHODS.md` for details.
-
-### GNOME Shell Extension (Required for Wayland Focus)
-
-For the "Focus Terminal" button to work on GNOME/Wayland, you need to install the **Window Calls** extension:
-
-#### Installation Options:
-
-**Option 1: GNOME Extensions Website (Recommended)**
-1. Visit [Window Calls on GNOME Extensions](https://extensions.gnome.org/extension/4724/window-calls/)
-2. Click "Install" to add it to your browser
-3. Toggle the extension ON in the GNOME Extensions app
-
-**Option 2: Manual Installation**
-```bash
-# Clone the repository
-git clone https://github.com/ickyicky/window-calls.git
-cd window-calls
-
-# Install to user extensions directory
-cp -r . ~/.local/share/gnome-shell/extensions/window-calls@ickyicky.github.io/
-
-# Restart GNOME Shell (Alt+F2, type 'r', press Enter)
-# Or log out and back in
-
-# Enable the extension
-gnome-extensions enable window-calls@ickyicky.github.io
-```
-
-#### Verify Installation
-```bash
-# Test if the extension is working
-gdbus call --session --dest org.gnome.Shell \
-  --object-path /org/gnome/Shell/Extensions/Windows \
-  --method org.gnome.Shell.Extensions.Windows.List
-```
-
-#### Why This Extension is Needed
-GNOME 41+ restricts window focusing via D-Bus for security reasons. The Window Calls extension provides a safe D-Bus interface for window management operations including:
-- Listing windows with details
-- Activating/focusing windows
-- Moving windows between workspaces
-- Resizing and positioning windows
-
-Without this extension, the "Focus Terminal" button will not work on Wayland.
+**Note:** The terminal tab focusing feature uses GNOME Terminal's built-in D-Bus API. No GNOME Shell extensions are required! X11 tools (wmctrl, xdotool) are also not needed.
 
 ## Troubleshooting
 
