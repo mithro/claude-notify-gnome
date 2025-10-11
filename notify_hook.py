@@ -17,6 +17,10 @@ from pathlib import Path
 # File paths for tracking notifications
 CLAUDE_DIR = Path.home() / '.claude'
 ACTIVE_NOTIFICATIONS_FILE = CLAUDE_DIR / 'active-notifications.json'
+IDLE_TIMER_FILE = CLAUDE_DIR / 'idle-timer.json'
+
+# Idle notification delay (seconds after Stop before sending idle notification)
+IDLE_NOTIFICATION_DELAY = 45
 
 # Logging setup (debug mode)
 logging.basicConfig(
@@ -87,6 +91,105 @@ def remove_notification_id(session_id: str):
             logger.info(f"Removed notification tracking for session {session_id[:8]}...")
     except Exception as e:
         logger.error(f"Failed to remove notification ID: {e}")
+
+
+def save_idle_timer(session_id: str, cwd: str):
+    """Save idle timer info to trigger delayed notification"""
+    try:
+        data = {
+            "session_id": session_id,
+            "cwd": cwd,
+            "timestamp": datetime.now().isoformat(),
+            "trigger_time": (datetime.now().timestamp() + IDLE_NOTIFICATION_DELAY)
+        }
+        with open(IDLE_TIMER_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved idle timer for session {session_id[:8]}... (will trigger in {IDLE_NOTIFICATION_DELAY}s)")
+    except Exception as e:
+        logger.error(f"Failed to save idle timer: {e}")
+
+
+def clear_idle_timer():
+    """Clear idle timer (cancel pending notification)"""
+    try:
+        if IDLE_TIMER_FILE.exists():
+            IDLE_TIMER_FILE.unlink()
+            logger.debug("Cleared idle timer")
+    except Exception as e:
+        logger.error(f"Failed to clear idle timer: {e}")
+
+
+def spawn_idle_notification_timer():
+    """Spawn background process to send idle notification after delay"""
+    try:
+        import subprocess
+        script_path = Path(__file__).resolve()
+        # Spawn detached background process
+        subprocess.Popen(
+            [sys.executable, str(script_path), '--idle-timer'],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        logger.info("Spawned idle notification timer process")
+    except Exception as e:
+        logger.error(f"Failed to spawn idle timer: {e}")
+
+
+def run_idle_timer():
+    """Background process: wait and send idle notification if still needed"""
+    import time
+
+    logger.info(f"Idle timer started, waiting {IDLE_NOTIFICATION_DELAY} seconds...")
+    time.sleep(IDLE_NOTIFICATION_DELAY)
+
+    try:
+        # Check if timer file still exists
+        if not IDLE_TIMER_FILE.exists():
+            logger.info("Idle timer cancelled (file removed)")
+            return
+
+        # Load timer data
+        with open(IDLE_TIMER_FILE, 'r') as f:
+            timer_data = json.load(f)
+
+        session_id = timer_data.get('session_id')
+        cwd = timer_data.get('cwd', '')
+
+        # Check if there's already an active notification (activity happened)
+        if get_notification_id(session_id):
+            logger.info("Idle timer: notification already active, skipping")
+            clear_idle_timer()
+            return
+
+        # Send idle notification
+        logger.info(f"Idle timer triggered for session {session_id[:8] if session_id else 'unknown'}...")
+
+        title = "⏳ Claude is Waiting"
+        body = "Claude has finished processing and is waiting for your response"
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        if cwd:
+            dir_name = os.path.basename(cwd) or cwd
+            body = f"{body}\n📁 {dir_name} • {timestamp}"
+        else:
+            body = f"{body}\n[{timestamp}]"
+
+        notification_id = send_notification_with_actions(title, body, session_id)
+
+        if notification_id:
+            save_notification_id(session_id, notification_id)
+            logger.info(f"Idle notification sent successfully (ID: {notification_id})")
+        else:
+            logger.error("Failed to send idle notification")
+
+        # Clean up timer file
+        clear_idle_timer()
+
+    except Exception as e:
+        logger.error(f"Idle timer error: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
 
 
 def close_notification(notification_id: int) -> bool:
@@ -259,6 +362,10 @@ def main():
         # Handle UserPromptSubmit - user started typing, dismiss any active notification
         if event_type == 'UserPromptSubmit':
             logger.info("UserPromptSubmit - user is responding, dismissing notification")
+
+            # Cancel any pending idle notification
+            clear_idle_timer()
+
             notification_id = get_notification_id(session_id)
             if notification_id:
                 if close_notification(notification_id):
@@ -273,6 +380,10 @@ def main():
         # Handle PreToolUse - Claude started working, dismiss any active notification
         if event_type == 'PreToolUse':
             logger.info("PreToolUse - Claude is working, dismissing notification")
+
+            # Cancel any pending idle notification
+            clear_idle_timer()
+
             notification_id = get_notification_id(session_id)
             if notification_id:
                 if close_notification(notification_id):
@@ -310,7 +421,15 @@ def main():
                     logger.warning(f"Failed to dismiss notification {notification_id}")
             else:
                 logger.debug("No active notification to dismiss")
+
+            # Start idle timer to send notification if user doesn't respond
+            save_idle_timer(session_id, cwd)
+            spawn_idle_notification_timer()
+
             return 0
+
+        # Cancel any pending idle timer since we're sending a notification now
+        clear_idle_timer()
 
         # Determine notification details based on message
         message_lower = message.lower()
@@ -367,4 +486,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Check if running as idle timer background process
+    if len(sys.argv) > 1 and sys.argv[1] == '--idle-timer':
+        run_idle_timer()
+        sys.exit(0)
+    else:
+        # Normal hook mode
+        sys.exit(main())
