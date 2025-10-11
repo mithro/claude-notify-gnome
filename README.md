@@ -30,11 +30,11 @@ A sophisticated notification system that allows you to click desktop notificatio
 The system is already set up and running! The components are:
 
 ### Files Created
-- `~/.claude/notify_hook.py` - Notification hook (already configured in Claude)
-- `~/.claude/claude_focus_service.py` - Background focus service
-- `~/.claude/terminal_finder.py` - Terminal discovery utility
-- `~/.claude/claude_focus.service` - Systemd service definition
-- `~/.claude/install_service.sh` - Service installer
+- `./notify_hook.py` - Notification hook (already configured in Claude)
+- `./claude_focus_service.py` - Background focus service
+- `./terminal_finder.py` - Terminal discovery utility
+- `./claude_focus.service` - Systemd service definition
+- `./install_service.sh` - Service installer
 
 ### Systemd Service
 ```bash
@@ -60,10 +60,9 @@ systemctl --user start claude_focus.service
 
 ### Technical Details
 
-#### X11 Method
-- Uses process tree walking to find: Claude PID → bash → gnome-terminal
-- Maps process PID to window ID using `wmctrl -lp`
-- Focuses window with `wmctrl -ia` or `xdotool windowactivate`
+#### X11 Method (Removed)
+- X11-specific methods (wmctrl, xdotool) removed - these don't work on Wayland
+- See TERMINAL_FOCUS_METHODS.md for detailed explanation of why these fail
 
 #### Wayland Method
 - Uses GNOME Shell D-Bus interface for window management
@@ -75,19 +74,19 @@ systemctl --user start claude_focus.service
 ### Test Terminal Discovery
 ```bash
 # Analyze current terminal session
-~/.claude/terminal_finder.py analyze
+./terminal_finder.py analyze
 
 # Test focusing current terminal
-~/.claude/terminal_finder.py focus
+./terminal_finder.py focus
 
 # Find processes in specific directory
-~/.claude/terminal_finder.py directory /path/to/dir
+./terminal_finder.py directory /path/to/dir
 ```
 
 ### Test Notification with Actions
 ```bash
 # Simulate a Claude notification with actions
-echo '{"session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | ~/.claude/notify_hook.py
+echo '{"session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | ./notify_hook.py
 ```
 
 ## Logs and Debugging
@@ -105,17 +104,17 @@ journalctl --user -u claude_focus.service -f
 ### Focus Service Manual Testing
 ```bash
 # Test focus service manually
-python3 ~/.claude/claude_focus_service.py
+python3 ./claude_focus_service.py
 ```
 
 ## Configuration Files
 
 ### Session Data
-- `~/.claude/session-data.json` - Active Claude sessions
-- `~/.claude/notification-mapping.json` - Notification ID to session mapping
+- `./session-data.json` - Active Claude sessions
+- `./notification-mapping.json` - Notification ID to session mapping
 
 ### Claude Settings
-The notification hook is already configured in `~/.claude/settings.json`:
+The notification hook is already configured in `./settings.json`:
 ```json
 {
   "hooks": {
@@ -124,7 +123,7 @@ The notification hook is already configured in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/tim/.claude/notify_hook.py"
+            "command": "./notify_hook.py"
           }
         ]
       }
@@ -138,14 +137,14 @@ The notification hook is already configured in `~/.claude/settings.json`:
 ### Required Packages
 - `python3-dbus` - D-Bus Python bindings
 - `python3-gi` - GObject introspection (for GLib mainloop)
-- `wmctrl` - X11 window management (optional, for X11 support)
-- `xdotool` - X11 automation (optional, for X11 support)
 
 ### Install Dependencies
 ```bash
 sudo apt update
-sudo apt install python3-dbus python3-gi wmctrl xdotool
+sudo apt install python3-dbus python3-gi
 ```
+
+**Note:** X11 tools (wmctrl, xdotool) are not needed and don't work on Wayland. See `TERMINAL_FOCUS_METHODS.md` for details.
 
 ### GNOME Shell Extension (Required for Wayland Focus)
 
@@ -207,7 +206,7 @@ journalctl --user -u claude_focus.service -n 50
 - Check D-Bus connectivity: `dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames`
 
 ### Terminal Focus Not Working
-- Test terminal discovery: `~/.claude/terminal_finder.py analyze`
+- Test terminal discovery: `./terminal_finder.py analyze`
 - Check session type: `echo $XDG_SESSION_TYPE`
 - For Wayland: Ensure GNOME Shell D-Bus is available
 

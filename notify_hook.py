@@ -1,28 +1,314 @@
 #!/usr/bin/env python3
 """
-Claude Code Notification Hook
-Sends desktop notifications when Claude is waiting for user input
-Uses D-Bus directly - no external commands needed
+Claude Code Notification Hook - Simplified Version
+Sends desktop notifications when Claude needs user attention
+Automatically dismisses notifications when user responds or Claude starts working
 """
 
 import json
 import sys
+import os
 import dbus
 import logging
-import os
 from datetime import datetime
+from typing import Optional
+from pathlib import Path
 
-# Set up logging
+# File paths for tracking notifications
+CLAUDE_DIR = Path.home() / '.claude'
+ACTIVE_NOTIFICATIONS_FILE = CLAUDE_DIR / 'active-notifications.json'
+IDLE_TIMER_FILE = CLAUDE_DIR / 'idle-timer.json'
+
+# Idle notification delay (seconds after Stop before sending idle notification)
+IDLE_NOTIFICATION_DELAY = 45
+
+# Logging setup (debug mode)
 logging.basicConfig(
     filename='/tmp/claude-notify.log',
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-def register_session_with_service(session_id, cwd, transcript_path):
-    """Register session with the Claude Focus Service"""
+
+def save_notification_id(session_id: str, notification_id: int):
+    """Save notification ID for a session to track active notifications"""
+    try:
+        # Load existing data
+        data = {}
+        if ACTIVE_NOTIFICATIONS_FILE.exists():
+            with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+                data = json.load(f)
+
+        # Update with new notification
+        data[session_id] = {
+            "notification_id": notification_id,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Save back to file
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        logger.info(f"Saved notification ID {notification_id} for session {session_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Failed to save notification ID: {e}")
+
+
+def get_notification_id(session_id: str) -> Optional[int]:
+    """Get the active notification ID for a session"""
+    try:
+        if not ACTIVE_NOTIFICATIONS_FILE.exists():
+            return None
+
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+            data = json.load(f)
+
+        session_data = data.get(session_id)
+        if session_data:
+            return session_data.get("notification_id")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get notification ID: {e}")
+        return None
+
+
+def remove_notification_id(session_id: str):
+    """Remove notification ID from tracking after dismissal"""
+    try:
+        if not ACTIVE_NOTIFICATIONS_FILE.exists():
+            return
+
+        with open(ACTIVE_NOTIFICATIONS_FILE, 'r') as f:
+            data = json.load(f)
+
+        if session_id in data:
+            del data[session_id]
+
+            with open(ACTIVE_NOTIFICATIONS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            logger.info(f"Removed notification tracking for session {session_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Failed to remove notification ID: {e}")
+
+
+def save_idle_timer(session_id: str, cwd: str):
+    """Save idle timer info to trigger delayed notification"""
+    try:
+        data = {
+            "session_id": session_id,
+            "cwd": cwd,
+            "timestamp": datetime.now().isoformat(),
+            "trigger_time": (datetime.now().timestamp() + IDLE_NOTIFICATION_DELAY)
+        }
+        with open(IDLE_TIMER_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved idle timer for session {session_id[:8]}... (will trigger in {IDLE_NOTIFICATION_DELAY}s)")
+    except Exception as e:
+        logger.error(f"Failed to save idle timer: {e}")
+
+
+def clear_idle_timer():
+    """Clear idle timer (cancel pending notification)"""
+    try:
+        if IDLE_TIMER_FILE.exists():
+            IDLE_TIMER_FILE.unlink()
+            logger.debug("Cleared idle timer")
+    except Exception as e:
+        logger.error(f"Failed to clear idle timer: {e}")
+
+
+def spawn_idle_notification_timer():
+    """Spawn background process to send idle notification after delay"""
+    try:
+        import subprocess
+        script_path = Path(__file__).resolve()
+        # Spawn detached background process
+        subprocess.Popen(
+            [sys.executable, str(script_path), '--idle-timer'],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        logger.info("Spawned idle notification timer process")
+    except Exception as e:
+        logger.error(f"Failed to spawn idle timer: {e}")
+
+
+def run_idle_timer():
+    """Background process: wait and send idle notification if still needed"""
+    import time
+
+    logger.info(f"Idle timer started, waiting {IDLE_NOTIFICATION_DELAY} seconds...")
+    time.sleep(IDLE_NOTIFICATION_DELAY)
+
+    try:
+        # Check if timer file still exists
+        if not IDLE_TIMER_FILE.exists():
+            logger.info("Idle timer cancelled (file removed)")
+            return
+
+        # Load timer data
+        with open(IDLE_TIMER_FILE, 'r') as f:
+            timer_data = json.load(f)
+
+        session_id = timer_data.get('session_id')
+        cwd = timer_data.get('cwd', '')
+
+        # Check if there's already an active notification (activity happened)
+        if get_notification_id(session_id):
+            logger.info("Idle timer: notification already active, skipping")
+            clear_idle_timer()
+            return
+
+        # Send idle notification
+        logger.info(f"Idle timer triggered for session {session_id[:8] if session_id else 'unknown'}...")
+
+        title = "⏳ Claude is Waiting"
+        body = "Claude has finished processing and is waiting for your response"
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        if cwd:
+            dir_name = os.path.basename(cwd) or cwd
+            body = f"{body}\n📁 {dir_name} • {timestamp}"
+        else:
+            body = f"{body}\n[{timestamp}]"
+
+        notification_id = send_notification_with_actions(title, body, session_id)
+
+        if notification_id:
+            save_notification_id(session_id, notification_id)
+            logger.info(f"Idle notification sent successfully (ID: {notification_id})")
+        else:
+            logger.error("Failed to send idle notification")
+
+        # Clean up timer file
+        clear_idle_timer()
+
+    except Exception as e:
+        logger.error(f"Idle timer error: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
+
+def close_notification(notification_id: int) -> bool:
+    """Close a notification using D-Bus"""
     try:
         bus = dbus.SessionBus()
+        notify_service = bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications"
+        )
+        notify_interface = dbus.Interface(
+            notify_service,
+            "org.freedesktop.Notifications"
+        )
+
+        # Call CloseNotification method
+        notify_interface.CloseNotification(dbus.UInt32(notification_id))
+        logger.info(f"Successfully closed notification {notification_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to close notification {notification_id}: {e}")
+        return False
+
+
+def send_notification_with_actions(title: str, message: str, session_id: str) -> Optional[int]:
+    """Send desktop notification with clickable actions"""
+    try:
+        bus = dbus.SessionBus()
+        notify_service = bus.get_object(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications"
+        )
+        notify_interface = dbus.Interface(
+            notify_service,
+            "org.freedesktop.Notifications"
+        )
+
+        # Notification with action buttons (disabled for now)
+        actions = []
+        # actions = [
+        #     "focus_terminal", "Focus Terminal",
+        #     "dismiss", "Dismiss"
+        # ]
+
+        # Critical urgency = persistent notification
+        hints = {"urgency": dbus.Byte(2)}
+
+        notification_id = notify_interface.Notify(
+            "Claude Code",           # app name
+            0,                      # replaces id
+            "dialog-information",   # icon
+            title,                  # summary
+            message,                # body
+            actions,                # actions
+            hints,                  # hints
+            0                       # timeout (0 = persistent)
+        )
+
+        logger.info(f"Notification sent successfully (ID: {notification_id})")
+        return notification_id
+
+    except Exception as e:
+        logger.error(f"Failed to send notification: {e}")
+        return None
+
+
+def get_terminal_screen_uuid() -> Optional[str]:
+    """Get GNOME_TERMINAL_SCREEN UUID from the bash parent process"""
+    try:
+        # Walk up process tree: notify_hook -> claude -> bash
+        current_pid = os.getpid()
+
+        # Get Claude process (our parent)
+        claude_pid = os.getppid()
+
+        # Get bash process (Claude's parent)
+        with open(f'/proc/{claude_pid}/stat', 'r') as f:
+            stat_data = f.read().split()
+            bash_pid = int(stat_data[3])  # ppid field
+
+        # Read bash environment for GNOME_TERMINAL_SCREEN
+        env_file = f'/proc/{bash_pid}/environ'
+        with open(env_file, 'rb') as f:
+            env_data = f.read().decode('utf-8', errors='ignore')
+
+        # Parse environment variables
+        env_vars = {}
+        for line in env_data.split('\0'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                env_vars[key] = value
+
+        screen_uuid = env_vars.get('GNOME_TERMINAL_SCREEN')
+        service_id = env_vars.get('GNOME_TERMINAL_SERVICE')
+
+        if screen_uuid:
+            logger.info(f"Found terminal screen UUID: {screen_uuid}")
+            if service_id:
+                logger.info(f"Found terminal service ID: {service_id}")
+            return screen_uuid
+        else:
+            logger.warning("No GNOME_TERMINAL_SCREEN found in bash environment")
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to get terminal screen UUID: {e}")
+        return None
+
+
+def register_session_with_service(session_id: str, cwd: str, terminal_screen: Optional[str], notification_id: int):
+    """Register session with the Focus Service"""
+    try:
+        bus = dbus.SessionBus()
+
+        # Check if service is running
+        if not bus.name_has_owner("com.claude.FocusService"):
+            logger.warning("Focus service not running")
+            return
+
         service = bus.get_object(
             "com.claude.FocusService",
             "/com/claude/FocusService"
@@ -32,366 +318,134 @@ def register_session_with_service(session_id, cwd, transcript_path):
             "com.claude.FocusService"
         )
 
-        success = focus_interface.RegisterSession(session_id, cwd, transcript_path)
+        # Register session with terminal screen UUID
+        success = focus_interface.RegisterSession(session_id, cwd, terminal_screen or "")
         if success:
-            logging.info(f"Successfully registered session {session_id[:8]}... with focus service")
+            logger.info(f"Registered session {session_id[:8]}... with terminal screen {terminal_screen}")
+
+            # Map notification to session
+            focus_interface.MapNotification(str(notification_id), session_id)
+            logger.info(f"Mapped notification {notification_id} to session {session_id[:8]}...")
         else:
-            logging.warning(f"Failed to register session {session_id[:8]}... with focus service")
+            logger.warning(f"Failed to register session {session_id[:8]}...")
 
     except dbus.exceptions.DBusException as e:
-        logging.debug(f"Focus service not available: {e}")
+        logger.debug(f"Focus service not available: {e}")
     except Exception as e:
-        logging.error(f"Error registering session: {e}")
+        logger.error(f"Error registering session: {e}")
 
-def store_notification_mapping(notification_id, session_id):
-    """Store mapping between notification ID and session ID"""
-    try:
-        mapping_file = os.path.expanduser("~/.claude/notification-mapping.json")
-
-        # Load existing mappings
-        mappings = {}
-        if os.path.exists(mapping_file):
-            with open(mapping_file, 'r') as f:
-                mappings = json.load(f)
-
-        # Add new mapping
-        mappings[str(notification_id)] = session_id
-
-        # Clean up old mappings (keep only last 100)
-        if len(mappings) > 100:
-            # Keep only the most recent entries
-            sorted_items = sorted(mappings.items(), key=lambda x: int(x[0]))
-            mappings = dict(sorted_items[-100:])
-
-        # Save mappings
-        os.makedirs(os.path.dirname(mapping_file), exist_ok=True)
-        with open(mapping_file, 'w') as f:
-            json.dump(mappings, f, indent=2)
-
-        logging.debug(f"Stored notification mapping: {notification_id} -> {session_id[:8]}...")
-
-    except Exception as e:
-        logging.error(f"Failed to store notification mapping: {e}")
-
-def track_active_notification(session_id, notification_id):
-    """Track active notification for a session"""
-    try:
-        active_file = os.path.expanduser("~/.claude/active-notifications.json")
-
-        # Load existing active notifications
-        active = {}
-        if os.path.exists(active_file):
-            with open(active_file, 'r') as f:
-                active = json.load(f)
-
-        # Add new active notification for this session
-        active[session_id] = {
-            'notification_id': notification_id,
-            'timestamp': datetime.now().isoformat()
-        }
-
-        # Save active notifications
-        os.makedirs(os.path.dirname(active_file), exist_ok=True)
-        with open(active_file, 'w') as f:
-            json.dump(active, f, indent=2)
-
-        logging.debug(f"Tracked active notification {notification_id} for session {session_id[:8]}...")
-
-    except Exception as e:
-        logging.error(f"Failed to track active notification: {e}")
-
-def clear_tracked_notification(session_id):
-    """Clear tracked notification for a session without dismissing (for basic notifications)"""
-    try:
-        active_file = os.path.expanduser("~/.claude/active-notifications.json")
-
-        if not os.path.exists(active_file):
-            return
-
-        # Load active notifications
-        with open(active_file, 'r') as f:
-            active = json.load(f)
-
-        # Remove this session if it exists
-        if session_id in active:
-            del active[session_id]
-
-            # Save updated active notifications
-            with open(active_file, 'w') as f:
-                json.dump(active, f, indent=2)
-
-            logging.debug(f"Cleared tracked notification for session {session_id[:8]}...")
-
-    except Exception as e:
-        logging.error(f"Failed to clear tracked notification: {e}")
-
-def dismiss_previous_notifications(session_id):
-    """Dismiss any previous notifications for this session to ensure single notification rule"""
-    try:
-        active_file = os.path.expanduser("~/.claude/active-notifications.json")
-
-        if not os.path.exists(active_file):
-            logging.debug(f"No active notifications file exists for session {session_id[:8]}...")
-            return
-
-        # Load active notifications
-        with open(active_file, 'r') as f:
-            active = json.load(f)
-
-        # Check if this session has active notifications
-        if session_id not in active:
-            logging.debug(f"No active notifications found for session {session_id[:8]}...")
-            return
-
-        notification_data = active[session_id]
-        notification_id = notification_data['notification_id']
-
-        logging.info(f"Enforcing single notification rule: dismissing previous notification {notification_id} for session {session_id[:8]}...")
-
-        # Dismiss the notification via D-Bus
-        bus = dbus.SessionBus()
-        notify_service = bus.get_object(
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications"
-        )
-        notify_interface = dbus.Interface(
-            notify_service,
-            "org.freedesktop.Notifications"
-        )
-
-        # CloseNotification method
-        notify_interface.CloseNotification(notification_id)
-
-        # Remove from active notifications
-        del active[session_id]
-
-        # Save updated active notifications
-        with open(active_file, 'w') as f:
-            json.dump(active, f, indent=2)
-
-        logging.info(f"Successfully dismissed previous notification {notification_id} - ensuring single notification per session")
-
-    except dbus.exceptions.DBusException as e:
-        logging.debug(f"Could not dismiss notification via D-Bus: {e}")
-    except Exception as e:
-        logging.error(f"Failed to dismiss previous notifications: {e}")
-
-def detect_claude_activity(input_data):
-    """Detect if this hook call indicates Claude is starting work (not waiting)"""
-    message = input_data.get('message', '').lower()
-    hook_event = input_data.get('hook_event_name', '')
-
-    # Indicators that Claude is starting work
-    work_indicators = [
-        'needs your permission',  # About to use a tool
-        'permission to use',      # About to use a tool
-    ]
-
-    # Indicators that Claude is waiting/idle
-    wait_indicators = [
-        'waiting for your input',
-        'is waiting',
-        'idle'
-    ]
-
-    # If it's a waiting message, Claude is NOT working
-    for indicator in wait_indicators:
-        if indicator in message:
-            return False
-
-    # If it's a permission request, Claude is about to work
-    for indicator in work_indicators:
-        if indicator in message:
-            return True
-
-    # Default: assume it's activity unless explicitly a wait message
-    return True
-
-def send_notification_with_actions(title, message, session_id, urgency=2, timeout=0):
-    """
-    Send desktop notification with clickable actions
-
-    Args:
-        title: Notification title
-        message: Notification body text
-        session_id: Claude session ID for focus callback
-        urgency: 0=low, 1=normal, 2=critical (persistent)
-        timeout: Duration in ms (0 = persistent for critical)
-
-    Returns:
-        notification_id if successful, None otherwise
-    """
-    try:
-        bus = dbus.SessionBus()
-        notify_service = bus.get_object(
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications"
-        )
-        notify_interface = dbus.Interface(
-            notify_service,
-            "org.freedesktop.Notifications"
-        )
-
-        # Define actions - these appear as buttons on the notification
-        actions = [
-            "focus_terminal", "Focus Terminal",
-            "dismiss", "Dismiss"
-        ]
-
-        # Simplified hints - remove potentially problematic ones
-        hints = {
-            "urgency": dbus.Byte(urgency),
-        }
-
-        # Send notification with actions
-        # Parameters: app_name, replaces_id, icon, summary, body, actions, hints, timeout
-        notification_id = notify_interface.Notify(
-            "Claude Code",           # app name
-            0,                      # replaces id (0 = new notification)
-            "dialog-information",   # icon
-            title,                  # summary
-            message,                # body
-            actions,                # actions
-            hints,                  # hints
-            timeout                 # timeout in ms
-        )
-
-        # Store the mapping for later action handling
-        store_notification_mapping(notification_id, session_id)
-
-        logging.info(f"Notification with actions sent successfully (ID: {notification_id})")
-        return notification_id
-
-    except dbus.exceptions.DBusException as e:
-        logging.error(f"D-Bus error: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Failed to send notification: {e}")
-        return None
-
-def send_notification(title, message, urgency=2, timeout=0):
-    """
-    Send basic desktop notification via D-Bus (fallback method)
-
-    Args:
-        title: Notification title
-        message: Notification body text
-        urgency: 0=low, 1=normal, 2=critical (persistent)
-        timeout: Duration in ms (0 = persistent for critical)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        bus = dbus.SessionBus()
-        notify_service = bus.get_object(
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications"
-        )
-        notify_interface = dbus.Interface(
-            notify_service,
-            "org.freedesktop.Notifications"
-        )
-
-        # Send notification
-        # Parameters: app_name, replaces_id, icon, summary, body, actions, hints, timeout
-        notification_id = notify_interface.Notify(
-            "Claude Code",           # app name
-            0,                      # replaces id (0 = new notification)
-            "dialog-information",   # icon
-            title,                  # summary
-            message,                # body
-            [],                     # actions
-            {"urgency": dbus.Byte(urgency)},  # hints
-            timeout                 # timeout in ms
-        )
-
-        logging.info(f"Basic notification sent successfully (ID: {notification_id})")
-        return True
-
-    except dbus.exceptions.DBusException as e:
-        logging.error(f"D-Bus error: {e}")
-        return False
-    except Exception as e:
-        logging.error(f"Failed to send notification: {e}")
-        return False
 
 def main():
     """Main entry point for the notification hook"""
-
-    logging.info("=" * 50)
-    logging.info("Notification hook triggered")
+    logger.info("=" * 50)
+    logger.info("Notification hook triggered")
 
     try:
         # Read JSON input from stdin
         input_data = json.load(sys.stdin)
+        logger.debug(f"Received: {json.dumps(input_data, indent=2)}")
 
-        # Log the received data
-        logging.debug(f"Received input: {json.dumps(input_data, indent=2)}")
-
-        # Extract message and other fields
+        # Extract event data
+        event_type = input_data.get('hook_event_name', '')
         message = input_data.get('message', 'Claude needs your attention')
         session_id = input_data.get('session_id', 'unknown')
-        cwd = input_data.get('cwd', '')
-        transcript_path = input_data.get('transcript_path', '')
-        hook_event_name = input_data.get('hook_event_name', '')
+        cwd = input_data.get('cwd', os.getcwd())
 
-        logging.info(f"Session: {session_id}")
-        logging.info(f"Hook Event: {hook_event_name}")
-        logging.info(f"Message: {message}")
-        logging.info(f"CWD: {cwd}")
+        # Get terminal screen UUID for precise terminal identification
+        terminal_screen = get_terminal_screen_uuid()
 
-        # Handle UserPromptSubmit: just dismiss notifications, don't create new ones
-        if hook_event_name == 'UserPromptSubmit':
-            logging.info("UserPromptSubmit detected - dismissing any idle notifications")
-            if session_id != 'unknown':
-                dismiss_previous_notifications(session_id)
-            logging.info("Auto-dismiss completed - Claude will start working")
-            sys.exit(0)
+        logger.info(f"Event: {event_type}")
+        logger.info(f"Session: {session_id}")
+        logger.info(f"CWD: {cwd}")
+        logger.info(f"Terminal screen: {terminal_screen}")
 
-        # Always dismiss any existing notification for this session to ensure only one notification per session
-        if session_id != 'unknown':
-            dismiss_previous_notifications(session_id)
+        # Handle UserPromptSubmit - user started typing, dismiss any active notification
+        if event_type == 'UserPromptSubmit':
+            logger.info("UserPromptSubmit - user is responding, dismissing notification")
 
-        # Detect activity type for logging purposes
-        is_claude_working = detect_claude_activity(input_data)
+            # Cancel any pending idle notification
+            clear_idle_timer()
 
-        # Register session with focus service
-        if session_id != 'unknown' and cwd:
-            register_session_with_service(session_id, cwd, transcript_path)
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
 
-        # Determine notification details based on message content
+        # Handle PreToolUse - Claude started working, dismiss any active notification
+        if event_type == 'PreToolUse':
+            logger.info("PreToolUse - Claude is working, dismissing notification")
+
+            # Cancel any pending idle notification
+            clear_idle_timer()
+
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
+
+        # Handle PostToolUse - Claude finished a tool, dismiss any active notification
+        if event_type == 'PostToolUse':
+            logger.info("PostToolUse - Claude finished tool execution, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+            return 0
+
+        # Handle Stop - Claude finished responding, dismiss any active notification
+        if event_type == 'Stop':
+            logger.info("Stop - Claude finished responding, dismissing notification")
+            notification_id = get_notification_id(session_id)
+            if notification_id:
+                if close_notification(notification_id):
+                    remove_notification_id(session_id)
+                    logger.info(f"Dismissed notification {notification_id} for session {session_id[:8]}...")
+                else:
+                    logger.warning(f"Failed to dismiss notification {notification_id}")
+            else:
+                logger.debug("No active notification to dismiss")
+
+            # Start idle timer to send notification if user doesn't respond
+            save_idle_timer(session_id, cwd)
+            spawn_idle_notification_timer()
+
+            return 0
+
+        # Cancel any pending idle timer since we're sending a notification now
+        clear_idle_timer()
+
+        # Determine notification details based on message
         message_lower = message.lower()
 
-        if "waiting for your input" in message_lower:
-            # Claude is idle and waiting for user
+        if "waiting for your input" in message_lower or "idle" in message_lower:
             title = "⏳ Claude is Waiting"
             body = "Claude has finished processing and is waiting for your response"
-            urgency = 2  # Critical - stays visible
-            use_actions = True
-
         elif "permission" in message_lower:
-            # Claude needs permission for a tool
             title = "🔒 Permission Required"
             body = message
-            urgency = 2  # Critical - needs user action
-            use_actions = True
-
-        elif "idle" in message_lower:
-            # General idle notification
-            title = "💭 Claude is Idle"
-            body = "Claude is waiting for your input"
-            urgency = 2
-            use_actions = True
-
         else:
             # Generic notification
-            title = "Claude Code Notification"
+            title = "Claude Code"
             body = message
-            urgency = 1  # Normal priority
-            use_actions = False
 
-        # Add timestamp and directory info to the body
+        # Add context to notification
         timestamp = datetime.now().strftime("%H:%M:%S")
         if cwd:
             dir_name = os.path.basename(cwd) or cwd
@@ -399,40 +453,43 @@ def main():
         else:
             body = f"{body}\n[{timestamp}]"
 
-        # Send the notification with or without actions
-        notification_id = None
-        if use_actions and session_id != 'unknown':  # Re-enabled actions with simpler hints
-            notification_id = send_notification_with_actions(title, body, session_id, urgency=urgency)
-            success = notification_id is not None
-        else:
-            success = send_notification(title, body, urgency=urgency)
+        # Send notification with actions
+        if session_id != 'unknown':
+            # Close any existing notification for this session before sending a new one
+            old_notification_id = get_notification_id(session_id)
+            if old_notification_id:
+                logger.info(f"Closing previous notification {old_notification_id} before sending new one")
+                close_notification(old_notification_id)
 
-        # Always track any successful notification for this session
-        if success and notification_id and session_id != 'unknown':
-            track_active_notification(session_id, notification_id)
-        elif success and session_id != 'unknown':
-            # For basic notifications without ID, we can't track them for dismissal
-            # but we should still clear any previous tracked notifications
-            clear_tracked_notification(session_id)
+            notification_id = send_notification_with_actions(title, body, session_id)
 
-        if success:
-            logging.info("Notification delivered successfully")
-            sys.exit(0)
+            if notification_id:
+                # Save notification ID for later dismissal
+                save_notification_id(session_id, notification_id)
+
+                # Register with focus service (disabled for now)
+                # register_session_with_service(session_id, cwd, terminal_screen, notification_id)
+                logger.info("Notification delivered successfully")
+            else:
+                logger.error("Failed to deliver notification")
         else:
-            logging.error("Failed to deliver notification")
-            # Don't exit with error - we don't want to break Claude's flow
-            sys.exit(0)
+            logger.warning("No session ID provided, skipping notification")
 
     except json.JSONDecodeError as e:
-        logging.error(f"Failed to parse JSON input: {e}")
-        logging.debug(f"Raw stdin: {sys.stdin.read()}")
-        sys.exit(0)  # Exit cleanly to not disrupt Claude
-
+        logger.error(f"Failed to parse JSON input: {e}")
     except Exception as e:
-        logging.error(f"Unexpected error in notification hook: {e}")
+        logger.error(f"Unexpected error: {e}")
         import traceback
-        logging.debug(traceback.format_exc())
-        sys.exit(0)  # Exit cleanly to not disrupt Claude
+        logger.debug(traceback.format_exc())
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    # Check if running as idle timer background process
+    if len(sys.argv) > 1 and sys.argv[1] == '--idle-timer':
+        run_idle_timer()
+        sys.exit(0)
+    else:
+        # Normal hook mode
+        sys.exit(main())

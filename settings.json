@@ -1,15 +1,11 @@
 {
-  "statusLine": {
-    "type": "command",
-    "command": "printf '${debian_chroot:+($debian_chroot)}\\033[01;32m%s@%s\\033[00m:\\033[01;34m%s\\033[00m' \"$(whoami)\" \"$(hostname -s)\" \"$(pwd)\""
-  },
   "hooks": {
     "Notification": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/home/tim/.claude/notify_hook.py"
+            "command": "./notify_hook.py"
           }
         ]
       }
@@ -19,7 +15,37 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/tim/.claude/notify_hook.py"
+            "command": "./notify_hook.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./notify_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./notify_hook.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./notify_hook.py"
           }
         ]
       }
