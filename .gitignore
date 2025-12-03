@@ -1,3 +1,6 @@
+# Git worktrees
+.worktrees/
+
 # Log files
 *.log
 /tmp/claude-notify.log
