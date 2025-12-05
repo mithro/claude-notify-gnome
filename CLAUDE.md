@@ -4,68 +4,145 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a Claude Code notification system that displays desktop notifications when Claude needs attention and automatically dismisses them based on user activity. It integrates with Claude Code via hooks configured in `settings.json`.
+This is a Claude Code notification system that displays desktop notifications when Claude needs attention. It supports multiple concurrent Claude sessions with per-session persistent notifications and popup alerts. The system integrates with Claude Code via hooks configured in `settings.json`.
 
-## Architecture
+## Architecture (v2)
 
-The system has three main components:
+The system uses a clean three-tier architecture:
 
-1. **notify_hook.py** - Main hook handler that processes Claude lifecycle events (Notification, UserPromptSubmit, PreToolUse, PostToolUse, Stop). This is the active component that runs for every Claude event.
+1. **Hook** (`src/claude_notify/hook/`) - Minimal forwarder that runs on every Claude event
+   - Reads JSON from stdin (Claude hook data)
+   - Captures environment variables (GNOME_TERMINAL_SCREEN, etc.)
+   - Encodes two-blob wire format (custom metadata + Claude data)
+   - Sends to daemon via Unix socket (fire-and-forget)
+   - Returns immediately to avoid blocking Claude
 
-2. **claude_focus_service.py** - Background D-Bus service for terminal focus functionality. **Currently disabled** - action buttons are commented out in notify_hook.py:230-235.
+2. **Tracker Library** (`src/claude_notify/tracker/`) - Reusable session tracking
+   - `state.py` - Session state model with state machine (WORKING, NEEDS_ATTENTION, etc.)
+   - `registry.py` - Multi-session registry with listener support
+   - `events.py` - Hook event parser and state determination logic
+   - `friendly_names.py` - Deterministic friendly name generator (adjective-noun)
 
-3. **terminal_finder.py** - Utility for terminal discovery and focus testing. Used for development/debugging, not part of the active system.
+3. **Daemon** (`src/claude_notify/daemon/`) - Persistent background process
+   - `server.py` - Unix socket server for receiving hook messages
+   - `main.py` - Main loop with session tracking and notification updates
+   - Maintains session state across hook invocations
+   - Updates persistent notifications in real-time
+   - Handles cleanup on session end
+
+4. **GNOME Integration** (`src/claude_notify/gnome/`) - Desktop notification interface
+   - `notifications.py` - D-Bus interface to org.freedesktop.Notifications
+   - Persistent notifications (critical urgency, never timeout)
+   - Popup notifications (normal urgency, auto-dismiss)
+   - Focus action buttons (click to focus terminal tab)
 
 ### Key Design Patterns
 
-**Event-driven with detached idle timer**: The hook handler must return immediately to Claude, so the 45-second idle timer spawns as a detached background process. Cancellation is handled via file deletion (`~/.claude/idle-timer.json`).
+**Thin hook, persistent daemon**: The hook handler must return immediately to Claude (<100ms). All state, logic, and notification management lives in the daemon process.
 
-**State tracking via JSON files**: Notification IDs are persisted in `~/.claude/active-notifications.json` to enable dismissal across multiple hook invocations. Each hook invocation is stateless - state must be loaded from disk.
+**Unix socket IPC**: Hook communicates with daemon via Unix socket at `/run/user/$UID/claude-notify.sock`. Fire-and-forget pattern - hook never waits for response.
+
+**Two-blob wire protocol**: Messages contain two newline-separated JSON blobs:
+1. Custom metadata (version, timestamp, environment variables, Claude data size)
+2. Raw Claude data (passed through unmodified)
+
+**Friendly session names**: UUIDs are deterministically mapped to readable names like "bold-cat" or "swift-eagle" using hash-based selection from word lists.
+
+**State machine**: Sessions transition through states (WORKING → NEEDS_ATTENTION) based on hook events. State changes trigger notification updates.
 
 **D-Bus for all notification operations**: Uses `org.freedesktop.Notifications` interface for sending and closing notifications. No fallback methods - D-Bus is the only supported mechanism.
 
 ## Testing and Debugging
 
-### Test notification system
+### Run test suite
 ```bash
-# Simulate Claude notification event
-echo '{"hook_event_name": "Notification", "session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | ./notify_hook.py
+# Run all tests
+uv run pytest
 
-# Watch notification logs
-tail -f /tmp/claude-notify.log
+# Run with verbose output
+uv run pytest -v
+
+# Run specific test file
+uv run pytest tests/test_state.py -v
+
+# Run integration tests
+uv run pytest tests/test_integration.py -v
 ```
 
-### Test terminal discovery
+### Test hook manually
 ```bash
-./terminal_finder.py analyze    # Show current session info
-./terminal_finder.py focus      # Test terminal focus
-./terminal_finder.py directory /path  # Find processes in directory
+# Simulate a Claude Stop event (needs daemon running)
+echo '{"hook_event_name": "Stop", "session_id": "test-123", "cwd": "'$(pwd)'", "message": "Test notification"}' | uv run claude-notify-hook
+
+# Test hook with custom socket path
+echo '{"hook_event_name": "PreToolUse", "session_id": "test-456", "cwd": "/tmp", "tool_name": "Bash"}' | SOCKET_PATH=/tmp/test.sock uv run claude-notify-hook
 ```
 
-### Manual service testing (if re-enabling focus)
+### Run daemon manually
 ```bash
-# Run focus service manually
-python3 ./claude_focus_service.py
+# Run daemon in foreground with debug logging
+uv run claude-notify-daemon --log-level DEBUG
 
-# Check systemd service
-systemctl --user status claude_focus.service
-journalctl --user -u claude_focus.service -f
+# Use custom socket path
+uv run claude-notify-daemon --socket /tmp/custom.sock
+
+# Dump daemon state (send SIGUSR1)
+pkill -SIGUSR1 -f claude-notify-daemon
+```
+
+### Test individual components
+```bash
+# Test friendly name generation
+uv run python -c "from claude_notify.tracker.friendly_names import generate_friendly_name; print(generate_friendly_name('test-session-id'))"
+
+# Test wire protocol encoding
+uv run python -c "from claude_notify.hook.protocol import encode_hook_message; print(encode_hook_message({'test': 'data'}, {'TERM': 'xterm'}))"
 ```
 
 ## Configuration
 
-**settings.json** - Claude Code hook configuration. The hook is registered for 5 events: Notification, UserPromptSubmit, PreToolUse, PostToolUse, Stop.
+### Claude Code Hook Configuration
 
-**notify_hook.py constants**:
-- `IDLE_NOTIFICATION_DELAY = 45` - seconds to wait before sending idle notification
-- `ACTIVE_NOTIFICATIONS_FILE` - tracks notification IDs per session
-- `IDLE_TIMER_FILE` - stores pending idle notification data
+Configure the hook in your Claude Code `settings.json`:
 
-## State Files
+```json
+{
+  "hooks": {
+    "Notification": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}]
+  }
+}
+```
 
-Located in `~/.claude/`:
-- **active-notifications.json** - Maps session_id → {notification_id, timestamp}
-- **idle-timer.json** - Temporary file for pending idle notification (deleted when cancelled or triggered)
+### Daemon Configuration
+
+Command-line options for `claude-notify-daemon`:
+- `--socket PATH` - Unix socket path (default: `/run/user/$UID/claude-notify.sock`)
+- `--popup-delay SECONDS` - Delay before popup notification (default: 45.0)
+- `--log-level LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+### Environment Variables
+
+Hook captures these environment variables:
+- `GNOME_TERMINAL_SCREEN` - Terminal tab UUID for focus functionality
+- `TERM` - Terminal type
+- `WINDOWID` - X11 window ID
+- `DISPLAY` - X11 display
+- `WAYLAND_DISPLAY` - Wayland display socket
+
+## Runtime State
+
+The daemon maintains all state in memory. No persistent state files are used in v2. Session state includes:
+- Session ID and friendly name
+- Current working directory
+- Terminal UUID (from GNOME_TERMINAL_SCREEN)
+- State (WORKING, NEEDS_ATTENTION, SESSION_LIMIT, API_ERROR)
+- Current activity message
+- Notification IDs (persistent and popup)
+- Timestamps
 
 ## Platform Notes
 
@@ -75,15 +152,57 @@ Located in `~/.claude/`:
 
 ## Dependencies
 
-Required: `python3-dbus`, `python3-gi`
+### System Dependencies (daemon only)
+
+Required for daemon D-Bus functionality:
+- `python3-dbus` - D-Bus Python bindings
+- `python3-gi` - GObject introspection for GLib
 
 Install: `sudo apt install python3-dbus python3-gi`
 
+### Python Dependencies
+
+The project uses `pyproject.toml` with optional dependency groups:
+- **daemon**: `dbus-python`, `PyGObject` (for notification functionality)
+- **dev**: `pytest`, `pytest-asyncio` (for testing)
+
+Install: `uv sync --extra daemon --extra dev`
+
+### Runtime Dependencies
+
+- Python 3.11+
+- GNOME desktop with D-Bus notification support
+- `/run/user/$UID/` directory for socket (provided by systemd on modern Linux)
+
 ## Important Implementation Notes
 
-- Hook handler receives JSON via stdin with fields: hook_event_name, message, session_id, cwd
+### Hook Design
+- Hook receives JSON via stdin with fields: `hook_event_name`, `message`, `session_id`, `cwd`, `tool_name`, etc.
+- Hook must return within 100ms to avoid blocking Claude
+- Fire-and-forget socket communication - no response waited
+- Captures environment at hook invocation time (terminal UUID, display info)
+
+### Wire Protocol
+- Two-blob format: custom metadata (line 1) + raw Claude data (line 2)
+- Custom blob includes protocol version, timestamp, environment, and Claude data size
+- Allows daemon to validate message integrity and parse environment
+- Forward-compatible: version field enables protocol evolution
+
+### Session Tracking
+- Sessions auto-register on first event
+- Friendly names are deterministic (same UUID = same name)
+- State transitions trigger notification updates
+- Session cleanup dismisses all notifications
+
+### Notifications
+- Persistent notifications use critical urgency (urgency=2) to prevent auto-dismiss
+- Popup notifications use normal urgency (urgency=1) with timeout
 - All D-Bus operations use `dbus.SessionBus()`, not system bus
-- Notification urgency is set to critical (2) for persistent notifications
-- Idle timer uses `subprocess.Popen()` with `start_new_session=True` to detach
-- Process tree walking reads `/proc/<pid>/stat` and `/proc/<pid>/environ` to identify terminal
-- Focus service functionality is disabled but code remains for potential future use
+- Action buttons use format `"action_id:session_id", "Button Label"`
+- Focus functionality requires terminal UUID from GNOME_TERMINAL_SCREEN
+
+### Testing
+- All components have unit tests with mocked D-Bus
+- Integration tests use real Unix sockets in temp directories
+- Run with `uv run pytest` - no system dependencies needed for tests
+- Mock-based testing allows CI/CD without GNOME desktop
