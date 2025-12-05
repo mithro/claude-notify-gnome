@@ -1,5 +1,7 @@
 """Generate friendly session names from UUIDs."""
 
+import hashlib
+
 ADJECTIVES = [
     "bold", "swift", "cosmic", "bright", "calm", "eager", "fair", "gentle",
     "happy", "keen", "lively", "merry", "noble", "proud", "quick", "ready",
@@ -34,8 +36,8 @@ def generate_friendly_name(session_id: str) -> str:
         adj_seed = int(clean_id[:8], 16)
         noun_seed = int(clean_id[8:16], 16)
     except (ValueError, IndexError):
-        # Fall back to hash for non-UUID strings (like test IDs)
-        h = hash(session_id)
+        # Fall back to deterministic hash for non-UUID strings (like test IDs)
+        h = int(hashlib.sha256(session_id.encode()).hexdigest()[:16], 16)
         adj_seed = h & 0xFFFFFFFF
         noun_seed = (h >> 32) & 0xFFFFFFFF
 
