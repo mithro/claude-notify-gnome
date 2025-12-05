@@ -34,6 +34,15 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Python build artifacts
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
 # Temporary files
 *.tmp
 *.temp
