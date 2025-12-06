@@ -227,12 +227,11 @@ def send_notification_with_actions(title: str, message: str, session_id: str) ->
             "org.freedesktop.Notifications"
         )
 
-        # Notification with action buttons (disabled for now)
-        actions = []
-        # actions = [
-        #     "focus_terminal", "Focus Terminal",
-        #     "dismiss", "Dismiss"
-        # ]
+        # Notification with action buttons
+        actions = [
+            "focus_terminal", "Focus Terminal",
+            "dismiss", "Dismiss"
+        ]
 
         # Critical urgency = persistent notification
         hints = {"urgency": dbus.Byte(2)}
@@ -467,8 +466,8 @@ def main():
                 # Save notification ID for later dismissal
                 save_notification_id(session_id, notification_id)
 
-                # Register with focus service (disabled for now)
-                # register_session_with_service(session_id, cwd, terminal_screen, notification_id)
+                # Register with focus service
+                register_session_with_service(session_id, cwd, terminal_screen, notification_id)
                 logger.info("Notification delivered successfully")
             else:
                 logger.error("Failed to deliver notification")
