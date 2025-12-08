@@ -10,6 +10,48 @@ from claude_notify.hook.protocol import decode_hook_message, HookMessage
 
 logger = logging.getLogger(__name__)
 
+SD_LISTEN_FDS_START = 3  # systemd passes sockets starting at FD 3
+
+
+def get_socket_from_systemd() -> Optional[socket.socket]:
+    """Get socket passed by systemd socket activation.
+
+    Returns None if not running under systemd socket activation.
+    See: https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html
+    """
+    listen_fds = os.environ.get("LISTEN_FDS")
+    listen_pid = os.environ.get("LISTEN_PID")
+
+    if not listen_fds or not listen_pid:
+        return None
+
+    # Verify PID matches (security check)
+    try:
+        pid = int(listen_pid)
+    except ValueError as e:
+        logger.warning(f"Invalid socket activation environment: LISTEN_PID is not numeric: {e}")
+        return None
+
+    if pid != os.getpid():
+        logger.warning(
+            f"LISTEN_PID ({listen_pid}) does not match current PID ({os.getpid()})"
+        )
+        return None
+
+    try:
+        num_fds = int(listen_fds)
+    except ValueError as e:
+        logger.warning(f"Invalid socket activation environment: LISTEN_FDS is not numeric: {e}")
+        return None
+
+    if num_fds < 1:
+        return None
+
+    # Get the first passed socket (FD 3)
+    sock = socket.fromfd(SD_LISTEN_FDS_START, socket.AF_UNIX, socket.SOCK_STREAM)
+    logger.info("Using socket from systemd socket activation")
+    return sock
+
 
 class DaemonServer:
     """Unix socket server for daemon."""
