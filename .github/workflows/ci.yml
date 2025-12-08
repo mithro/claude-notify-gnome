@@ -130,7 +130,7 @@ jobs:
   e2e-mock:
     name: E2E Tests (Mock Claude)
     runs-on: ubuntu-latest
-    if: github.event.inputs.run_e2e_tests == 'true' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_e2e_tests == 'true'
     needs: test
 
     steps:
