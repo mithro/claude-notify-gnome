@@ -68,3 +68,59 @@ def test_get_socket_from_systemd_returns_none_when_both_non_numeric():
     }):
         result = get_socket_from_systemd()
         assert result is None
+
+
+def test_daemon_server_uses_systemd_socket_when_available():
+    """DaemonServer uses systemd socket if available."""
+    # Create a socket and bind it (simulating systemd)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = f"{tmpdir}/test.sock"
+
+        # Create and bind a socket at FD 3
+        pre_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        pre_sock.bind(sock_path)
+        pre_sock.listen(5)
+        os.dup2(pre_sock.fileno(), 3)
+
+        with mock.patch.dict(os.environ, {
+            "LISTEN_FDS": "1",
+            "LISTEN_PID": str(os.getpid())
+        }):
+            handler = mock.Mock()
+            server = DaemonServer(
+                socket_path=f"{tmpdir}/different.sock",  # Different path!
+                message_handler=handler
+            )
+            server.start()
+
+            # Server should use the systemd socket, not create new one
+            assert server._systemd_activated is True
+            # The different.sock should NOT exist
+            assert not os.path.exists(f"{tmpdir}/different.sock")
+
+            server.shutdown()
+
+        pre_sock.close()
+
+
+def test_daemon_server_creates_socket_when_no_systemd():
+    """DaemonServer creates socket when not under systemd."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sock_path = f"{tmpdir}/test.sock"
+
+        # Ensure no systemd env vars
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("LISTEN_FDS", None)
+            os.environ.pop("LISTEN_PID", None)
+
+            handler = mock.Mock()
+            server = DaemonServer(
+                socket_path=sock_path,
+                message_handler=handler
+            )
+            server.start()
+
+            assert server._systemd_activated is False
+            assert os.path.exists(sock_path)
+
+            server.shutdown()

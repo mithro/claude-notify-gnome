@@ -65,6 +65,7 @@ class DaemonServer:
         self._handler = message_handler
         self._server: Optional[socket.socket] = None
         self._running = False
+        self._systemd_activated = False
 
     def _ensure_socket_dir(self) -> None:
         """Ensure socket directory exists."""
@@ -74,23 +75,36 @@ class DaemonServer:
 
     def _cleanup_stale_socket(self) -> None:
         """Remove stale socket file if it exists."""
-        try:
-            os.unlink(self._socket_path)
-        except OSError:
-            pass
+        if not self._systemd_activated:
+            try:
+                os.unlink(self._socket_path)
+            except OSError:
+                pass
 
     def start(self) -> None:
-        """Start the server (non-blocking)."""
-        self._ensure_socket_dir()
-        self._cleanup_stale_socket()
+        """Start the server (non-blocking).
 
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(self._socket_path)
-        self._server.listen(10)
+        Uses systemd socket activation if available, otherwise creates socket.
+        """
+        # Try systemd socket activation first
+        systemd_sock = get_socket_from_systemd()
+        if systemd_sock is not None:
+            self._server = systemd_sock
+            self._systemd_activated = True
+            logger.info("Using systemd socket activation")
+        else:
+            # Manual mode - create socket ourselves
+            self._ensure_socket_dir()
+            self._cleanup_stale_socket()
+
+            self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._server.bind(self._socket_path)
+            self._server.listen(10)
+            self._systemd_activated = False
+            logger.info(f"Daemon listening on {self._socket_path}")
+
         self._server.settimeout(1.0)
         self._running = True
-
-        logger.info(f"Daemon listening on {self._socket_path}")
 
     def serve_once(self) -> None:
         """Accept and handle one connection (for testing)."""
