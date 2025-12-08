@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Claude Code notification system that displays desktop notifications when Claude needs attention. It supports multiple concurrent Claude sessions with per-session persistent notifications and popup alerts. The system integrates with Claude Code via hooks configured in `settings.json`.
 
+**Installation**: The project includes `claude-notify-install` CLI for automated setup. It configures hooks, installs systemd units, and enables socket activation. See "Installation" section below.
+
 ## Architecture (v2)
 
 The system uses a clean three-tier architecture:
@@ -36,6 +38,12 @@ The system uses a clean three-tier architecture:
    - Popup notifications (normal urgency, auto-dismiss)
    - Focus action buttons (click to focus terminal tab)
 
+5. **Installation** (`src/claude_notify/install/`) - Automated setup utilities
+   - `main.py` - CLI for install/uninstall operations
+   - `hooks.py` - Hook configuration management for settings.json
+   - `systemd.py` - Systemd unit file installation and management
+   - `templates/` - Socket and service unit file templates
+
 ### Key Design Patterns
 
 **Thin hook, persistent daemon**: The hook handler must return immediately to Claude (<100ms). All state, logic, and notification management lives in the daemon process.
@@ -52,12 +60,87 @@ The system uses a clean three-tier architecture:
 
 **D-Bus for all notification operations**: Uses `org.freedesktop.Notifications` interface for sending and closing notifications. No fallback methods - D-Bus is the only supported mechanism.
 
+**Systemd socket activation**: The daemon uses socket activation - systemd listens on the Unix socket and starts the daemon on first connection. This provides automatic startup, restart on failure, and clean resource management.
+
+## Installation
+
+### Using the Installation CLI
+
+The `claude-notify-install` command automates setup:
+
+```bash
+# Standard installation
+uv run claude-notify-install install
+
+# With autostart enabled (socket starts on login)
+uv run claude-notify-install install --enable-autostart
+
+# Development mode (uses 'uv run' for hook and daemon commands)
+uv run claude-notify-install install --mode development
+```
+
+**What it does**:
+1. Updates `~/.claude/settings.json` with hook configuration
+2. Installs systemd units to `~/.config/systemd/user/`:
+   - `claude-notify-daemon.socket` - Socket activation unit
+   - `claude-notify-daemon.service` - Daemon service unit
+3. Reloads systemd user daemon
+4. Optionally enables socket for autostart
+
+**Development vs Installed mode**:
+- **development**: Hook command is `uv run --project /path/to/repo claude-notify-hook`
+- **installed**: Hook command is `claude-notify-hook` (assumes package is installed)
+
+### Uninstallation
+
+```bash
+uv run claude-notify-install uninstall
+```
+
+Stops services, removes hooks from settings.json, and deletes systemd units.
+
+### Manual Setup
+
+If you need to set up manually:
+
+1. **Configure hooks**: Edit `~/.claude/settings.json` and add hook configuration for events: Notification, Stop, PreToolUse, PostToolUse, UserPromptSubmit
+
+2. **Install systemd units**: Copy templates from `src/claude_notify/install/templates/` to `~/.config/systemd/user/`
+
+3. **Reload systemd**: `systemctl --user daemon-reload`
+
+4. **Start socket**: `systemctl --user start claude-notify-daemon.socket`
+
+### Systemd Units
+
+**Socket unit** (`claude-notify-daemon.socket`):
+- Listens on `/run/user/$UID/claude-notify.sock`
+- Socket mode 0600 (owner-only access)
+- Triggers service on first connection
+
+**Service unit** (`claude-notify-daemon.service`):
+- Requires socket unit
+- Type=simple with automatic restart
+- Logs to systemd journal with identifier 'claude-notify'
+
+**Checking status**:
+```bash
+# Socket status (should be listening)
+systemctl --user status claude-notify-daemon.socket
+
+# Service status (active when daemon running)
+systemctl --user status claude-notify-daemon.service
+
+# View logs
+journalctl --user -u claude-notify-daemon.service -f
+```
+
 ## Testing and Debugging
 
 ### Run test suite
 ```bash
-# Run all tests
-uv run pytest
+# Run all unit tests (excludes E2E tests)
+uv run pytest tests/ --ignore=tests/e2e -v
 
 # Run with verbose output
 uv run pytest -v
@@ -67,7 +150,32 @@ uv run pytest tests/test_state.py -v
 
 # Run integration tests
 uv run pytest tests/test_integration.py -v
+
+# Run with coverage
+uv run pytest --cov=src/claude_notify --cov-report=term
 ```
+
+### Run E2E tests with Docker
+
+The project includes Docker-based E2E tests that simulate a complete environment:
+
+```bash
+# Build test image
+docker build -t claude-test:latest -f docker/claude-test/Dockerfile .
+
+# Run E2E tests
+docker run --rm -v "$PWD:/app" claude-test:latest \
+  pytest tests/e2e/test_hook_to_daemon.py -v
+
+# Or use docker-compose
+docker-compose -f docker/docker-compose.test.yml up --build
+```
+
+**E2E test coverage**:
+- `tests/e2e/test_hook_to_daemon.py` - Full hook-to-daemon flow with mock Claude events
+- `tests/e2e/test_notifications.py` - GNOME notification integration (requires X11/Wayland)
+
+**CI/CD**: GitHub Actions workflow (`.github/workflows/ci.yml`) runs unit tests on every push and E2E tests on manual dispatch.
 
 ### Test hook manually
 ```bash
@@ -101,18 +209,32 @@ uv run python -c "from claude_notify.hook.protocol import encode_hook_message; p
 
 ## Configuration
 
+### Installation Modes
+
+The installation CLI supports two modes:
+
+**Installed mode** (default):
+- Hook command: `claude-notify-hook`
+- Daemon command: `claude-notify-daemon`
+- Use when package is installed via pip/uv to system or virtualenv
+
+**Development mode** (`--mode development`):
+- Hook command: `uv run --project /path/to/repo claude-notify-hook`
+- Daemon command: `uv run --project /path/to/repo claude-notify-daemon`
+- Use when working on the codebase, runs from source
+
 ### Claude Code Hook Configuration
 
-Configure the hook in your Claude Code `settings.json`:
+The installation CLI automatically configures hooks in `~/.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "Notification": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "PreToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "PostToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}]
+    "Notification": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}]
   }
 }
 ```
@@ -123,6 +245,8 @@ Command-line options for `claude-notify-daemon`:
 - `--socket PATH` - Unix socket path (default: `/run/user/$UID/claude-notify.sock`)
 - `--popup-delay SECONDS` - Delay before popup notification (default: 45.0)
 - `--log-level LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+When using systemd socket activation, the socket path is managed by systemd (configured in the .socket unit file).
 
 ### Environment Variables
 
@@ -143,6 +267,15 @@ The daemon maintains all state in memory. No persistent state files are used in 
 - Current activity message
 - Notification IDs (persistent and popup)
 - Timestamps
+
+**Daemon lifecycle with systemd**:
+1. Socket unit starts on boot (if enabled) or manually
+2. systemd listens on Unix socket at `/run/user/$UID/claude-notify.sock`
+3. First hook event triggers daemon start via socket activation
+4. Daemon receives file descriptor from systemd and begins accepting connections
+5. Daemon continues running, processing hook events and managing notifications
+6. If daemon crashes, systemd restarts it automatically (RestartSec=5)
+7. Socket remains active even if daemon stops
 
 ## Platform Notes
 
@@ -204,5 +337,16 @@ Install: `uv sync --extra daemon --extra dev`
 ### Testing
 - All components have unit tests with mocked D-Bus
 - Integration tests use real Unix sockets in temp directories
-- Run with `uv run pytest` - no system dependencies needed for tests
+- E2E tests use Docker to simulate complete environment with mock Claude
+- Run with `uv run pytest` - no system dependencies needed for unit tests
 - Mock-based testing allows CI/CD without GNOME desktop
+- GitHub Actions CI runs unit tests on Python 3.11, 3.12, 3.13
+- E2E tests available via manual workflow dispatch
+
+### Installation
+- `claude-notify-install` CLI automates setup process
+- Hooks are added to `~/.claude/settings.json` atomically (write to temp, then rename)
+- Systemd units use template substitution for daemon command
+- Socket activation requires systemd user session
+- Development mode uses `uv run --project` to run from source
+- Installed mode assumes package is installed and uses entry points directly

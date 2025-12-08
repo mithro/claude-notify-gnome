@@ -37,61 +37,100 @@ A multi-session notification system for Claude Code on GNOME that displays persi
 
 ## Installation
 
-### 1. Install System Dependencies
+### Prerequisites
 
 ```bash
-# Required for D-Bus notifications (daemon only)
+# System dependencies for D-Bus notifications
 sudo apt install python3-dbus python3-gi
+
+# Install the package
+uv pip install claude-notify-gnome[daemon]
 ```
 
-### 2. Install Python Package
+### Quick Install
+
+The easiest way to install is using the installation CLI:
 
 ```bash
-# Install with uv (recommended)
-uv sync --extra daemon --extra dev
+# Install hooks and systemd units
+uv run claude-notify-install install
 
-# Or install in development mode
-uv pip install -e ".[daemon,dev]"
+# Install with autostart enabled (daemon starts on login)
+uv run claude-notify-install install --enable-autostart
+
+# Development mode (uses 'uv run' for hook and daemon)
+uv run claude-notify-install install --mode development
 ```
 
-### 3. Configure Claude Code Hook
+This will:
+1. Configure Claude Code hooks in `~/.claude/settings.json`
+2. Install systemd socket and service units in `~/.config/systemd/user/`
+3. Reload systemd
+4. Optionally enable socket activation on login
 
-Add to your Claude Code `settings.json`:
+### Manual Installation
+
+If you prefer to install manually:
+
+#### 1. Configure Claude Code Hooks
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "Notification": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "PreToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "PostToolUse": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "uv run claude-notify-hook"}]}]
+    "Notification": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "claude-notify-hook"}]}]
   }
 }
 ```
 
-### 4. Start the Daemon
+#### 2. Install systemd Units
+
+Copy the unit files from `src/claude_notify/install/templates/` to `~/.config/systemd/user/`:
 
 ```bash
-# Run in foreground for testing
+cp src/claude_notify/install/templates/claude-notify-daemon.socket \
+   ~/.config/systemd/user/
+cp src/claude_notify/install/templates/claude-notify-daemon.service \
+   ~/.config/systemd/user/
+
+# Edit service file to set ExecStart command
+# Then reload systemd
+systemctl --user daemon-reload
+```
+
+### Starting the Daemon
+
+The daemon uses systemd socket activation and starts automatically when the first hook event occurs:
+
+```bash
+# Start socket (daemon starts on first connection)
+systemctl --user start claude-notify-daemon.socket
+
+# Enable autostart on login
+systemctl --user enable claude-notify-daemon.socket
+
+# Check status
+systemctl --user status claude-notify-daemon.socket
+systemctl --user status claude-notify-daemon.service
+
+# View logs
+journalctl --user -u claude-notify-daemon.service -f
+```
+
+Manual daemon control:
+
+```bash
+# Run daemon in foreground (for testing)
 uv run claude-notify-daemon --log-level INFO
 
-# Or set up as systemd service (create ~/.config/systemd/user/claude-notify.service):
-[Unit]
-Description=Claude Code Notification Daemon
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/uv run claude-notify-daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-
-# Enable and start
-systemctl --user daemon-reload
-systemctl --user enable --now claude-notify.service
+# Stop daemon
+systemctl --user stop claude-notify-daemon.service
+systemctl --user stop claude-notify-daemon.socket
 ```
 
 ## How It Works
@@ -131,10 +170,12 @@ Each session gets a deterministic readable name:
 
 ## Testing
 
-### Run Test Suite
+### Unit Tests
+
+Run the test suite using pytest:
 
 ```bash
-# Run all tests
+# Run all unit tests
 uv run pytest
 
 # Run with verbose output
@@ -143,11 +184,24 @@ uv run pytest -v
 # Run specific test module
 uv run pytest tests/test_state.py -v
 
-# Run integration tests
-uv run pytest tests/test_integration.py -v
-
 # Run with coverage
 uv run pytest --cov=src/claude_notify --cov-report=html
+```
+
+### End-to-End Tests
+
+E2E tests use Docker to simulate a complete environment:
+
+```bash
+# Build Docker test image
+docker build -t claude-test:latest -f docker/claude-test/Dockerfile .
+
+# Run E2E tests
+docker run --rm -v "$PWD:/app" claude-test:latest \
+  pytest tests/e2e/test_hook_to_daemon.py -v
+
+# Or use docker-compose
+docker-compose -f docker/docker-compose.test.yml up --build
 ```
 
 ### Manual Testing
@@ -172,15 +226,32 @@ uv run python -c "from claude_notify.tracker.friendly_names import generate_frie
 # Install in development mode with all extras
 uv sync --extra daemon --extra dev
 
-# Run tests on file change
+# Install as development mode (hooks use 'uv run')
+uv run claude-notify-install install --mode development
+
+# Run tests on file change (requires pytest-watch)
 uv run pytest-watch
 
 # Type check (if using mypy)
 uv run mypy src/
 
-# Format code
-uv run black src/ tests/
+# Format code (if using ruff or black)
+uv run ruff format src/ tests/
 ```
+
+## Uninstallation
+
+To remove claude-notify-gnome:
+
+```bash
+# Uninstall hooks and systemd units
+uv run claude-notify-install uninstall
+```
+
+This will:
+1. Stop and disable the daemon socket and service
+2. Remove hooks from `~/.claude/settings.json`
+3. Delete systemd unit files from `~/.config/systemd/user/`
 
 ## Configuration
 
@@ -217,13 +288,27 @@ src/claude_notify/
 │   └── friendly_names.py   # Name generator
 ├── gnome/                   # GNOME integration
 │   └── notifications.py    # D-Bus notification manager
-└── daemon/                  # Daemon process
-    ├── main.py             # Main loop and CLI
-    └── server.py           # Unix socket server
+├── daemon/                  # Daemon process
+│   ├── main.py             # Main loop and CLI
+│   └── server.py           # Unix socket server
+└── install/                 # Installation utilities
+    ├── main.py             # CLI for install/uninstall
+    ├── hooks.py            # Hook configuration management
+    ├── systemd.py          # Systemd unit file management
+    └── templates/          # Unit file templates
+        ├── claude-notify-daemon.socket
+        └── claude-notify-daemon.service
 
 tests/                       # Test suite
 ├── test_*.py               # Unit tests (mocked D-Bus)
-└── test_integration.py     # Integration tests (real sockets)
+├── test_integration.py     # Integration tests (real sockets)
+└── e2e/                    # End-to-end tests
+    └── test_*.py           # Docker-based E2E tests
+
+docker/                      # Docker test environments
+├── claude-test/            # Mock Claude environment
+├── gnome-test/             # GNOME notification testing
+└── docker-compose.test.yml # Test orchestration
 ```
 
 ## Dependencies
@@ -250,13 +335,33 @@ uv sync --extra daemon --extra dev
 
 ## Troubleshooting
 
+### Installation Issues
+
+```bash
+# Check if installation completed successfully
+systemctl --user list-unit-files | grep claude-notify
+
+# Verify hooks were added to Claude settings
+cat ~/.claude/settings.json | grep claude-notify
+
+# Re-run installation
+uv run claude-notify-install uninstall
+uv run claude-notify-install install --enable-autostart
+```
+
 ### Daemon Won't Start
 
 ```bash
-# Check if socket already exists
+# Check systemd socket status
+systemctl --user status claude-notify-daemon.socket
+
+# Check if socket file exists
 ls -la /run/user/$UID/claude-notify.sock
 
-# Check daemon logs
+# View daemon logs
+journalctl --user -u claude-notify-daemon.service -f
+
+# Try starting manually to see errors
 uv run claude-notify-daemon --log-level DEBUG
 
 # Verify D-Bus is available
@@ -273,7 +378,10 @@ echo '{"hook_event_name": "Stop", "session_id": "test"}' | uv run claude-notify-
 ls -la /run/user/$UID/claude-notify.sock
 
 # Verify hook is in Claude settings.json
-cat ~/.config/claude/settings.json | grep claude-notify-hook
+cat ~/.claude/settings.json | grep claude-notify-hook
+
+# Check if socket is listening
+systemctl --user is-active claude-notify-daemon.socket
 ```
 
 ### Notifications Not Appearing
@@ -287,6 +395,9 @@ uv run python -c "import dbus; bus = dbus.SessionBus(); print('D-Bus OK')"
 
 # Check daemon state
 pkill -SIGUSR1 -f claude-notify-daemon
+
+# View daemon logs for errors
+journalctl --user -u claude-notify-daemon.service -n 50
 ```
 
 ### Multiple Sessions Not Working
@@ -298,6 +409,9 @@ pkill -SIGUSR1 -f claude-notify-daemon
 # Verify each session has unique ID
 # Check terminal UUID is being captured
 echo $GNOME_TERMINAL_SCREEN
+
+# Check daemon logs for session registration
+journalctl --user -u claude-notify-daemon.service -f | grep session
 ```
 
 ## Future Features
