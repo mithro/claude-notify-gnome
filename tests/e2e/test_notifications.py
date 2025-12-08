@@ -12,19 +12,11 @@ from pathlib import Path
 
 import pytest
 
+# send_hook_event is imported from conftest.py which pytest loads automatically
+from .conftest import send_hook_event
+
 SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
-
-
-def send_hook_event(event: dict) -> bool:
-    """Send a hook event to the running daemon."""
-    proc = subprocess.run(
-        ["uv", "run", "claude-notify-hook"],
-        input=json.dumps(event).encode(),
-        capture_output=True,
-        cwd="/app",
-    )
-    return proc.returncode == 0
 
 
 def capture_screenshot(name: str) -> Path:
@@ -50,7 +42,7 @@ def capture_screenshot(name: str) -> Path:
     return output_path
 
 
-def test_notification_appears_on_stop():
+def test_notification_appears_on_stop(running_daemon, temp_socket_path):
     """Test that Stop event shows a notification."""
     event = {
         "hook_event_name": "Stop",
@@ -58,7 +50,7 @@ def test_notification_appears_on_stop():
         "cwd": "/home/testuser/my-project",
     }
 
-    result = send_hook_event(event)
+    result = send_hook_event(temp_socket_path, event)
     assert result, "Failed to send hook event"
 
     # Wait for notification
@@ -69,7 +61,7 @@ def test_notification_appears_on_stop():
     assert screenshot.exists()
 
 
-def test_notification_shows_friendly_name():
+def test_notification_shows_friendly_name(running_daemon, temp_socket_path):
     """Test that notification shows friendly session name."""
     event = {
         "hook_event_name": "Stop",
@@ -77,19 +69,19 @@ def test_notification_shows_friendly_name():
         "cwd": "/home/testuser/project",
     }
 
-    result = send_hook_event(event)
+    result = send_hook_event(temp_socket_path, event)
     assert result
 
     time.sleep(1)
     capture_screenshot("02_notification_friendly_name")
 
 
-def test_notification_updates_on_state_change():
+def test_notification_updates_on_state_change(running_daemon, temp_socket_path):
     """Test notification updates when state changes."""
     session_id = "state-change-session"
 
     # First: Claude stops (needs attention)
-    send_hook_event({
+    send_hook_event(temp_socket_path, {
         "hook_event_name": "Stop",
         "session_id": session_id,
         "cwd": "/home/testuser/project",
@@ -98,7 +90,7 @@ def test_notification_updates_on_state_change():
     capture_screenshot("03a_state_needs_attention")
 
     # Then: User submits prompt (working)
-    send_hook_event({
+    send_hook_event(temp_socket_path, {
         "hook_event_name": "UserPromptSubmit",
         "session_id": session_id,
         "cwd": "/home/testuser/project",
@@ -107,7 +99,7 @@ def test_notification_updates_on_state_change():
     capture_screenshot("03b_state_working")
 
     # Then: Claude stops again
-    send_hook_event({
+    send_hook_event(temp_socket_path, {
         "hook_event_name": "Stop",
         "session_id": session_id,
         "cwd": "/home/testuser/project",
@@ -116,7 +108,7 @@ def test_notification_updates_on_state_change():
     capture_screenshot("03c_state_needs_attention_again")
 
 
-def test_multiple_session_notifications():
+def test_multiple_session_notifications(running_daemon, temp_socket_path):
     """Test multiple concurrent session notifications."""
     sessions = [
         ("session-alpha", "project-alpha"),
@@ -125,7 +117,7 @@ def test_multiple_session_notifications():
     ]
 
     for session_id, project in sessions:
-        send_hook_event({
+        send_hook_event(temp_socket_path, {
             "hook_event_name": "Stop",
             "session_id": session_id,
             "cwd": f"/home/testuser/{project}",
@@ -136,12 +128,12 @@ def test_multiple_session_notifications():
     capture_screenshot("04_multiple_sessions")
 
 
-def test_working_state_notification():
+def test_working_state_notification(running_daemon, temp_socket_path):
     """Test notification shows working state correctly."""
     session_id = "working-session"
 
     # Tool use indicates working state
-    send_hook_event({
+    send_hook_event(temp_socket_path, {
         "hook_event_name": "PreToolUse",
         "session_id": session_id,
         "cwd": "/home/testuser/project",
