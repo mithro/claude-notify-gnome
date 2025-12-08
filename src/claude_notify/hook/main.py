@@ -69,7 +69,8 @@ def run_hook(
 def main() -> None:
     """Entry point for claude-notify-hook command."""
     stdin_data = sys.stdin.read()
-    exit_code = run_hook(stdin_data)
+    socket_path = os.environ.get("SOCKET_PATH")  # Read from env
+    exit_code = run_hook(stdin_data, socket_path=socket_path)  # Pass it
     sys.exit(exit_code)
 
 
