@@ -20,6 +20,7 @@ dev = [
 [project.scripts]
 claude-notify-hook = "claude_notify.hook.main:main"
 claude-notify-daemon = "claude_notify.daemon.main:main"
+claude-notify-install = "claude_notify.install.main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
