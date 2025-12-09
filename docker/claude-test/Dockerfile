@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     python3.12-dev \
     curl \
     dbus \
+    dbus-x11 \
     dbus-user-session \
     build-essential \
     pkg-config \
@@ -19,9 +20,10 @@ RUN apt-get update && apt-get install -y \
     libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+# Install uv system-wide
+RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh \
+    && mv /root/.local/bin/uv /usr/local/bin/ \
+    && mv /root/.local/bin/uvx /usr/local/bin/
 
 # Copy project
 WORKDIR /app
@@ -29,16 +31,15 @@ COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 COPY tests/ ./tests/
 
-# Install project with dependencies
+# Pre-install dependencies (will be re-installed at runtime if /app is volume-mounted)
 RUN uv sync --extra daemon --extra dev
 
-# Create test user
-RUN useradd -m -s /bin/bash testuser && \
-    mkdir -p /home/testuser/.claude && \
-    chown -R testuser:testuser /home/testuser /app
+# Create runtime directory for D-Bus
+RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 
-USER testuser
-ENV HOME=/home/testuser
+# Copy entrypoint and make it executable
+COPY docker/claude-test/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/app/docker/claude-test/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["pytest", "tests/", "-v", "--ignore=tests/e2e/"]
