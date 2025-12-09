@@ -1,0 +1,161 @@
+"""Unix socket server for receiving hook messages."""
+
+import logging
+import os
+import socket
+import threading
+from typing import Callable, Optional
+
+from claude_notify.hook.protocol import decode_hook_message, HookMessage
+
+logger = logging.getLogger(__name__)
+
+SD_LISTEN_FDS_START = 3  # systemd passes sockets starting at FD 3
+
+
+def get_socket_from_systemd() -> Optional[socket.socket]:
+    """Get socket passed by systemd socket activation.
+
+    Returns None if not running under systemd socket activation.
+    See: https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html
+    """
+    listen_fds = os.environ.get("LISTEN_FDS")
+    listen_pid = os.environ.get("LISTEN_PID")
+
+    if not listen_fds or not listen_pid:
+        return None
+
+    # Verify PID matches (security check)
+    try:
+        pid = int(listen_pid)
+    except ValueError as e:
+        logger.warning(f"Invalid socket activation environment: LISTEN_PID is not numeric: {e}")
+        return None
+
+    if pid != os.getpid():
+        logger.warning(
+            f"LISTEN_PID ({listen_pid}) does not match current PID ({os.getpid()})"
+        )
+        return None
+
+    try:
+        num_fds = int(listen_fds)
+    except ValueError as e:
+        logger.warning(f"Invalid socket activation environment: LISTEN_FDS is not numeric: {e}")
+        return None
+
+    if num_fds < 1:
+        return None
+
+    # Get the first passed socket (FD 3)
+    sock = socket.fromfd(SD_LISTEN_FDS_START, socket.AF_UNIX, socket.SOCK_STREAM)
+    logger.info("Using socket from systemd socket activation")
+    return sock
+
+
+class DaemonServer:
+    """Unix socket server for daemon."""
+
+    def __init__(
+        self,
+        socket_path: str,
+        message_handler: Callable[[HookMessage], None],
+    ):
+        self._socket_path = socket_path
+        self._handler = message_handler
+        self._server: Optional[socket.socket] = None
+        self._running = False
+        self._systemd_activated = False
+
+    def _ensure_socket_dir(self) -> None:
+        """Ensure socket directory exists."""
+        socket_dir = os.path.dirname(self._socket_path)
+        if socket_dir:
+            os.makedirs(socket_dir, exist_ok=True)
+
+    def _cleanup_stale_socket(self) -> None:
+        """Remove stale socket file if it exists."""
+        if not self._systemd_activated:
+            try:
+                os.unlink(self._socket_path)
+            except OSError:
+                pass
+
+    def start(self) -> None:
+        """Start the server (non-blocking).
+
+        Uses systemd socket activation if available, otherwise creates socket.
+        """
+        # Try systemd socket activation first
+        systemd_sock = get_socket_from_systemd()
+        if systemd_sock is not None:
+            self._server = systemd_sock
+            self._systemd_activated = True
+            logger.info("Using systemd socket activation")
+        else:
+            # Manual mode - create socket ourselves
+            self._ensure_socket_dir()
+            self._cleanup_stale_socket()
+
+            self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._server.bind(self._socket_path)
+            self._server.listen(10)
+            self._systemd_activated = False
+            logger.info(f"Daemon listening on {self._socket_path}")
+
+        self._server.settimeout(1.0)
+        self._running = True
+
+    def serve_once(self) -> None:
+        """Accept and handle one connection (for testing)."""
+        self.start()
+        try:
+            self._accept_one()
+        finally:
+            self.shutdown()
+
+    def serve_forever(self) -> None:
+        """Accept connections until shutdown."""
+        self.start()
+        while self._running:
+            self._accept_one()
+
+    def _accept_one(self) -> None:
+        """Accept and handle one connection."""
+        try:
+            conn, _ = self._server.accept()
+            threading.Thread(
+                target=self._handle_connection,
+                args=(conn,),
+                daemon=True,
+            ).start()
+        except socket.timeout:
+            pass
+        except OSError:
+            pass  # Server was shut down
+
+    def _handle_connection(self, conn: socket.socket) -> None:
+        """Handle a single connection."""
+        try:
+            data = b""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+
+            if data:
+                message = decode_hook_message(data.decode("utf-8"))
+                self._handler(message)
+        except Exception as e:
+            logger.warning(f"Error handling connection: {e}")
+        finally:
+            conn.close()
+
+    def shutdown(self) -> None:
+        """Shutdown the server."""
+        self._running = False
+        if self._server:
+            self._server.close()
+            self._server = None
+        self._cleanup_stale_socket()

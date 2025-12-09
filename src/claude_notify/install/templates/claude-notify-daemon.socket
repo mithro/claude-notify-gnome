@@ -1,0 +1,9 @@
+[Unit]
+Description=Claude Notify Daemon Socket
+
+[Socket]
+ListenStream=%t/claude-notify.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

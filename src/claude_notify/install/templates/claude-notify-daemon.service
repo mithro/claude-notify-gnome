@@ -1,0 +1,16 @@
+[Unit]
+Description=Claude Notify Daemon
+Requires=claude-notify-daemon.socket
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={daemon_command}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-notify
+
+[Install]
+WantedBy=default.target

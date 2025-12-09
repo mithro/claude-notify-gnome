@@ -1,0 +1,45 @@
+# docker/docker-compose.test.yml
+version: '3.8'
+
+services:
+  # Unit tests (no special environment needed)
+  unit-test:
+    build:
+      context: ..
+      dockerfile: docker/claude-test/Dockerfile
+    command: ["pytest", "tests/", "-v", "--ignore=tests/e2e/"]
+
+  # Mock integration tests
+  integration-test:
+    build:
+      context: ..
+      dockerfile: docker/claude-test/Dockerfile
+    command: ["pytest", "tests/e2e/", "-v", "-k", "not real_claude"]
+    volumes:
+      - ../tests/e2e:/app/tests/e2e:ro
+
+  # Real Claude API tests (requires ANTHROPIC_API_KEY)
+  real-claude-test:
+    build:
+      context: ..
+      dockerfile: docker/claude-test/Dockerfile
+    command: ["pytest", "tests/e2e/test_real_claude.py", "-v"]
+    environment:
+      - ANTHROPIC_API_KEY
+    volumes:
+      - ../tests/e2e:/app/tests/e2e:ro
+
+  # GNOME notification tests
+  gnome-test:
+    build:
+      context: ..
+      dockerfile: docker/gnome-test/Dockerfile
+    command: ["pytest", "tests/e2e/test_notifications.py", "-v"]
+    # Needs capabilities for ydotool uinput access
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/uinput
+    volumes:
+      - ../tests/e2e:/app/tests/e2e
+      - ../test-output:/app/test-output

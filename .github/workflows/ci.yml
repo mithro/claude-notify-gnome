@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_e2e_tests:
+        description: 'Run E2E tests (requires Docker)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_DEFAULT_VERSION: '3.11'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ env.PYTHON_DEFAULT_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Check for ruff
+        id: check_ruff
+        run: |
+          if uv run python -c "import ruff" 2>/dev/null; then
+            echo "has_ruff=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_ruff=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping ruff checks (not installed)"
+          fi
+        continue-on-error: true
+
+      - name: Run ruff linting
+        if: steps.check_ruff.outputs.has_ruff == 'true'
+        run: uv run ruff check src/ tests/
+
+      - name: Run ruff formatting check
+        if: steps.check_ruff.outputs.has_ruff == 'true'
+        run: uv run ruff format --check src/ tests/
+
+      - name: Check for mypy
+        id: check_mypy
+        run: |
+          if uv run python -c "import mypy" 2>/dev/null; then
+            echo "has_mypy=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_mypy=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping mypy checks (not installed)"
+          fi
+        continue-on-error: true
+
+      - name: Run mypy type checking
+        if: steps.check_mypy.outputs.has_mypy == 'true'
+        run: uv run mypy src/
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache uv dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-${{ matrix.python-version }}-
+            uv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run unit tests
+        run: uv run pytest tests/ --ignore=tests/e2e -v
+
+      - name: Check for coverage
+        id: check_coverage
+        run: |
+          if uv run python -c "import coverage" 2>/dev/null; then
+            echo "has_coverage=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_coverage=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Run tests with coverage
+        if: steps.check_coverage.outputs.has_coverage == 'true'
+        run: uv run pytest tests/ --ignore=tests/e2e --cov=src/claude_notify --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        if: steps.check_coverage.outputs.has_coverage == 'true' && matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
+
+  e2e-mock:
+    name: E2E Tests (Mock Claude)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build claude-test Docker image
+        run: |
+          docker build -t claude-test:latest -f docker/claude-test/Dockerfile .
+
+      - name: Run E2E tests in Docker
+        run: |
+          docker run --rm \
+            -v "$PWD:/app" \
+            claude-test:latest \
+            pytest tests/e2e/test_hook_to_daemon.py -v
+
+  e2e-gnome:
+    name: E2E Tests (GNOME Notifications)
+    runs-on: ubuntu-latest
+    # Disabled by default - requires privileged mode and complex GNOME setup
+    if: false
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gnome-test Docker image
+        run: |
+          docker build -t gnome-test:latest -f docker/gnome-test/Dockerfile .
+
+      - name: Run GNOME notification tests in Docker
+        run: |
+          docker run --rm \
+            --privileged \
+            -v "$PWD:/app" \
+            -e WAYLAND_DISPLAY=wayland-0 \
+            gnome-test:latest \
+            pytest tests/e2e/test_notifications.py -v
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnome-test-screenshots
+          path: tests/e2e/screenshots/
+          if-no-files-found: ignore
+
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ env.PYTHON_DEFAULT_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT_VERSION }}
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Check package metadata
+        run: |
+          uv run python -m tarfile -l dist/*.tar.gz | head -20
+          echo "---"
+          ls -lh dist/
